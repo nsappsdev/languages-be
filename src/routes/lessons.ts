@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Response, Router } from 'express';
 import { z } from 'zod';
 import { authenticate, AuthenticatedRequest } from '../middleware/authenticate';
 import { prisma } from '../lib/prisma';
@@ -34,8 +34,22 @@ const updateLessonSchema = lessonBaseSchema.partial().extend({
   tasks: z.array(taskBaseSchema).optional(),
 });
 
-router.get('/lessons', authenticate, async (_req: AuthenticatedRequest, res) => {
+const requireAdmin = (req: AuthenticatedRequest, res: Response) => {
+  if (!req.user) {
+    res.status(401).json({ message: 'Unauthorized' });
+    return false;
+  }
+  if (req.user.role !== 'admin') {
+    res.status(403).json({ message: 'Forbidden' });
+    return false;
+  }
+  return true;
+};
+
+router.get('/lessons', authenticate, async (req: AuthenticatedRequest, res) => {
+  const where = req.user?.role === 'learner' ? { status: 'PUBLISHED' as const } : undefined;
   const lessons = await prisma.lesson.findMany({
+    where,
     orderBy: { updatedAt: 'desc' },
     include: {
       tasks: {
@@ -48,8 +62,13 @@ router.get('/lessons', authenticate, async (_req: AuthenticatedRequest, res) => 
 });
 
 router.get('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res) => {
-  const lesson = await prisma.lesson.findUnique({
-    where: { id: req.params.id },
+  const where =
+    req.user?.role === 'learner'
+      ? { id: req.params.id, status: 'PUBLISHED' as const }
+      : { id: req.params.id };
+
+  const lesson = await prisma.lesson.findFirst({
+    where,
     include: {
       tasks: {
         orderBy: { order: 'asc' },
@@ -64,7 +83,7 @@ router.get('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res) 
 });
 
 router.post('/lessons', authenticate, async (req: AuthenticatedRequest, res) => {
-  if (!req.user) return res.status(401).json({ message: 'Unauthorized' });
+  if (!requireAdmin(req, res)) return;
   const parsed = createLessonSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
@@ -76,7 +95,7 @@ router.post('/lessons', authenticate, async (req: AuthenticatedRequest, res) => 
       description,
       status: status ?? 'DRAFT',
       publishedAt: status === 'PUBLISHED' ? new Date() : null,
-      authorId: req.user.id,
+      authorId: req.user!.id,
       tasks: tasks
         ? {
             create: tasks.map((task, index) => ({
@@ -104,6 +123,7 @@ router.post('/lessons', authenticate, async (req: AuthenticatedRequest, res) => 
 });
 
 router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res) => {
+  if (!requireAdmin(req, res)) return;
   const parsed = updateLessonSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
@@ -203,6 +223,7 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
 });
 
 router.delete('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res) => {
+  if (!requireAdmin(req, res)) return;
   try {
     await prisma.lesson.delete({ where: { id: req.params.id } });
     return res.status(204).send();
@@ -215,6 +236,7 @@ router.post(
   '/lessons/:lessonId/tasks',
   authenticate,
   async (req: AuthenticatedRequest, res) => {
+    if (!requireAdmin(req, res)) return;
     const parsed = taskBaseSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
@@ -253,6 +275,7 @@ router.delete(
   '/lessons/:lessonId/tasks/:taskId',
   authenticate,
   async (req: AuthenticatedRequest, res) => {
+    if (!requireAdmin(req, res)) return;
     const task = await prisma.task.findFirst({
       where: { id: req.params.taskId, lessonId: req.params.lessonId },
     });
