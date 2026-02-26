@@ -17,9 +17,11 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  lessons                  Lesson[]            @relation("LessonAuthor")
-  createdVocabularyEntries VocabularyEntry[]   @relation("VocabularyCreator")
+  lessons                  Lesson[]               @relation("LessonAuthor")
+  createdVocabularyEntries VocabularyEntry[]      @relation("VocabularyCreator")
   learnerVocabulary        LearnerVocabulary[]
+  progressEvents           LearnerProgressEvent[]
+  refreshTokens            AuthRefreshToken[]
 }
 
 model Lesson {
@@ -117,4 +119,42 @@ enum LearnerWordStatus {
   NEW
   REVIEWING
   MASTERED
+}
+
+model LearnerProgressEvent {
+  id              String            @id @default(cuid())
+  userId          String
+  user            User              @relation(fields: [userId], references: [id])
+  lessonId        String
+  taskId          String?
+  eventType       ProgressEventType
+  attemptNumber   Int?
+  isCorrect       Boolean?
+  score           Int?
+  completion      Int?
+  clientTimestamp DateTime?
+  idempotencyKey  String            @unique
+  payload         Json?
+  createdAt       DateTime          @default(now())
+
+  @@index([userId, createdAt])
+  @@index([lessonId, createdAt])
+}
+
+enum ProgressEventType {
+  TASK_ATTEMPT
+  TASK_COMPLETED
+  LESSON_COMPLETED
+}
+
+model AuthRefreshToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  user      User      @relation(fields: [userId], references: [id])
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, expiresAt])
 }
