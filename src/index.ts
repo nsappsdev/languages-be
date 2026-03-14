@@ -2,7 +2,7 @@ import cors from 'cors';
 import express from 'express';
 import swaggerUi from 'swagger-ui-express';
 import { config } from './config';
-import { swaggerSpec } from './docs/swagger';
+import { swaggerSpec } from './swagger/swagger';
 import { authRouter } from './routes/auth';
 import { lessonsRouter } from './routes/lessons';
 import { analyticsRouter } from './routes/analytics';
