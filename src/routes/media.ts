@@ -2,37 +2,36 @@ import fs from 'fs';
 import path from 'path';
 import { Response, Router } from 'express';
 import multer from 'multer';
+import { z } from 'zod';
 import { authenticate, AuthenticatedRequest } from '../middleware/authenticate';
+import { prisma } from '../lib/prisma';
 
 const router = Router();
 
 const AUDIO_UPLOAD_DIR = path.resolve(process.cwd(), 'public', 'audio');
 const MAX_AUDIO_UPLOAD_BYTES = 25 * 1024 * 1024;
 const ALLOWED_EXTENSIONS = new Set([
-  '.aac',
-  '.flac',
-  '.m4a',
   '.mp3',
-  '.ogg',
   '.wav',
-  '.webm',
 ]);
 const MIME_EXTENSION_MAP: Record<string, string> = {
-  'audio/aac': '.aac',
-  'audio/flac': '.flac',
   'audio/mp3': '.mp3',
-  'audio/mp4': '.m4a',
   'audio/mpeg': '.mp3',
-  'audio/ogg': '.ogg',
   'audio/wav': '.wav',
-  'audio/webm': '.webm',
-  'audio/x-m4a': '.m4a',
   'audio/x-wav': '.wav',
 };
 
 type UploadedAudioRequest = AuthenticatedRequest & {
   file?: Express.Multer.File;
+  body: {
+    lessonItemId?: string;
+  };
 };
+
+const deleteAudioSchema = z.object({
+  lessonItemId: z.string().trim().min(1).optional(),
+  audioUrl: z.string().trim().min(1),
+});
 
 function ensureUploadDir() {
   fs.mkdirSync(AUDIO_UPLOAD_DIR, { recursive: true });
@@ -77,6 +76,25 @@ function resolveFileExtension(originalName: string, mimeType: string) {
   return null;
 }
 
+function resolveStoredAudioPath(audioUrl: string) {
+  const mediaPrefix = '/media/audio/';
+  if (!audioUrl.startsWith(mediaPrefix)) {
+    return null;
+  }
+
+  const encodedFileName = audioUrl.slice(mediaPrefix.length);
+  if (!encodedFileName) {
+    return null;
+  }
+
+  const decodedFileName = decodeURIComponent(encodedFileName);
+  if (decodedFileName !== path.basename(decodedFileName)) {
+    return null;
+  }
+
+  return path.join(AUDIO_UPLOAD_DIR, decodedFileName);
+}
+
 const storage = multer.diskStorage({
   destination: (_req, _file, callback) => {
     ensureUploadDir();
@@ -98,12 +116,12 @@ const upload = multer({
   fileFilter: (_req, file, callback) => {
     const extension = resolveFileExtension(file.originalname, file.mimetype);
     if (!file.mimetype.startsWith('audio/') && !extension) {
-      callback(new Error('Only audio files are allowed'));
+      callback(new Error('Only MP3 and WAV audio files are allowed'));
       return;
     }
 
     if (!extension) {
-      callback(new Error('Unsupported audio file type'));
+      callback(new Error('Only MP3 and WAV audio files are allowed'));
       return;
     }
 
@@ -140,15 +158,59 @@ router.post('/media/audio', (req: UploadedAudioRequest, res) => {
     return res.status(400).json({ message: 'Audio file is required' });
   }
 
-  return res.status(201).json({
-    file: {
-      audioUrl: `/media/audio/${encodeURIComponent(req.file.filename)}`,
-      fileName: req.file.filename,
-      originalName: req.file.originalname,
-      mimeType: req.file.mimetype,
-      size: req.file.size,
-    },
-  });
+  const audioUrl = `/media/audio/${encodeURIComponent(req.file.filename)}`;
+
+  const finalize = async () => {
+    const lessonItemId = req.body.lessonItemId?.trim();
+    if (lessonItemId) {
+      await prisma.lessonItem.updateMany({
+        where: { id: lessonItemId },
+        data: { audioUrl },
+      });
+    }
+
+    return res.status(201).json({
+      file: {
+        audioUrl,
+        fileName: req.file!.filename,
+        originalName: req.file!.originalname,
+        mimeType: req.file!.mimetype,
+        size: req.file!.size,
+      },
+    });
+  };
+
+  return void finalize();
+});
+
+router.delete('/media/audio', authenticate, async (req: AuthenticatedRequest, res) => {
+  if (!requireAdmin(req, res)) {
+    return;
+  }
+
+  const parsed = deleteAudioSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
+  }
+
+  const lessonItemId = parsed.data.lessonItemId?.trim();
+  if (lessonItemId) {
+    await prisma.lessonItem.updateMany({
+      where: { id: lessonItemId },
+      data: { audioUrl: '' },
+    });
+  }
+
+  const targetPath = resolveStoredAudioPath(parsed.data.audioUrl);
+  if (!targetPath) {
+    return res.status(400).json({ message: 'Invalid audioUrl' });
+  }
+
+  if (fs.existsSync(targetPath)) {
+    fs.unlinkSync(targetPath);
+  }
+
+  return res.status(204).send();
 });
 
 export { router as mediaRouter };
