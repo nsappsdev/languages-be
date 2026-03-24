@@ -1,16 +1,13 @@
 -- CreateEnum
-CREATE TYPE "ProgressEventType" AS ENUM ('TASK_ATTEMPT', 'TASK_COMPLETED', 'LESSON_COMPLETED');
+CREATE TYPE "ProgressEventType" AS ENUM ('ITEM_STARTED', 'ITEM_COMPLETED', 'LESSON_COMPLETED');
 
 -- CreateTable
 CREATE TABLE "LearnerProgressEvent" (
     "id" TEXT NOT NULL,
     "userId" TEXT NOT NULL,
     "lessonId" TEXT NOT NULL,
-    "taskId" TEXT,
+    "lessonItemId" TEXT,
     "eventType" "ProgressEventType" NOT NULL,
-    "attemptNumber" INTEGER,
-    "isCorrect" BOOLEAN,
-    "score" INTEGER,
     "completion" INTEGER,
     "clientTimestamp" TIMESTAMP(3),
     "idempotencyKey" TEXT NOT NULL,

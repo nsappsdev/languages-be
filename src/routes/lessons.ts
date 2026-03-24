@@ -11,28 +11,42 @@ const lessonBaseSchema = z.object({
   status: z.enum(['DRAFT', 'PUBLISHED']).optional(),
 });
 
-const taskOptionSchema = z.object({
-  id: z.string().optional(),
-  label: z.string().min(1),
-  isCorrect: z.boolean().optional().default(false),
-});
+const audioUrlSchema = z.string().trim().min(1).refine(
+  (value) => value.startsWith('/') || /^https?:\/\//i.test(value),
+  {
+    message: 'audioUrl must be an absolute URL or a root-relative media path',
+  },
+);
 
-const taskBaseSchema = z.object({
-  id: z.string().optional(),
-  prompt: z.string().min(4),
-  type: z.enum(['PICK_ONE', 'FILL_IN_BLANK', 'MATCH']),
+const segmentSchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    text: z.string().min(1),
+    startMs: z.number().int().min(0),
+    endMs: z.number().int().min(1),
+  })
+  .refine((segment) => segment.endMs > segment.startMs, {
+    message: 'Segment endMs must be greater than startMs',
+    path: ['endMs'],
+  });
+
+const itemBaseSchema = z.object({
+  id: z.string().min(1).optional(),
+  text: z.string().min(1),
+  audioUrl: audioUrlSchema,
   order: z.number().int().nonnegative().optional(),
-  config: z.record(z.any()).optional().default({}),
-  options: z.array(taskOptionSchema).optional(),
+  segments: z.array(segmentSchema).min(1),
 });
 
 const createLessonSchema = lessonBaseSchema.extend({
-  tasks: z.array(taskBaseSchema).optional(),
+  items: z.array(itemBaseSchema).optional(),
 });
 
 const updateLessonSchema = lessonBaseSchema.partial().extend({
-  tasks: z.array(taskBaseSchema).optional(),
+  items: z.array(itemBaseSchema).optional(),
 });
+
+const createItemSchema = itemBaseSchema.omit({ id: true });
 
 const requireAdmin = (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
@@ -52,9 +66,8 @@ router.get('/lessons', authenticate, async (req: AuthenticatedRequest, res) => {
     where,
     orderBy: { updatedAt: 'desc' },
     include: {
-      tasks: {
+      items: {
         orderBy: { order: 'asc' },
-        include: { options: true },
       },
     },
   });
@@ -70,9 +83,8 @@ router.get('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res) 
   const lesson = await prisma.lesson.findFirst({
     where,
     include: {
-      tasks: {
+      items: {
         orderBy: { order: 'asc' },
-        include: { options: true },
       },
     },
   });
@@ -88,7 +100,8 @@ router.post('/lessons', authenticate, async (req: AuthenticatedRequest, res) => 
   if (!parsed.success) {
     return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
   }
-  const { title, description, status, tasks } = parsed.data;
+
+  const { title, description, status, items } = parsed.data;
   const created = await prisma.lesson.create({
     data: {
       title,
@@ -96,29 +109,23 @@ router.post('/lessons', authenticate, async (req: AuthenticatedRequest, res) => 
       status: status ?? 'DRAFT',
       publishedAt: status === 'PUBLISHED' ? new Date() : null,
       authorId: req.user!.id,
-      tasks: tasks
+      items: items
         ? {
-            create: tasks.map((task, index) => ({
-              prompt: task.prompt,
-              type: task.type,
-              order: task.order ?? index,
-              config: task.config ?? {},
-              options: task.options
-                ? {
-                    create: task.options.map((option) => ({
-                      label: option.label,
-                      isCorrect: option.isCorrect ?? false,
-                    })),
-                  }
-                : undefined,
+            create: items.map((item, index) => ({
+              id: item.id,
+              order: item.order ?? index,
+              text: item.text,
+              audioUrl: item.audioUrl,
+              segments: item.segments,
             })),
           }
         : undefined,
     },
     include: {
-      tasks: { include: { options: true }, orderBy: { order: 'asc' } },
+      items: { orderBy: { order: 'asc' } },
     },
   });
+
   return res.status(201).json({ lesson: created });
 });
 
@@ -129,93 +136,53 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
     return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
   }
 
-  const existing = await prisma.lesson.findUnique({ where: { id: req.params.id } });
+  const existing = await prisma.lesson.findUnique({
+    where: { id: req.params.id },
+    include: { items: { orderBy: { order: 'asc' } } },
+  });
   if (!existing) {
     return res.status(404).json({ message: 'Lesson not found' });
   }
 
-  const { title, description, status, tasks } = parsed.data;
+  const { title, description, status, items } = parsed.data;
 
-  const lesson = await prisma.lesson.update({
-    where: { id: req.params.id },
-    data: {
-      title: title ?? existing.title,
-      description: description ?? existing.description,
-      status: status ?? existing.status,
-      publishedAt:
-        status === 'PUBLISHED'
-          ? existing.publishedAt ?? new Date()
-          : status === 'DRAFT'
-            ? null
-            : existing.publishedAt,
-    },
-  });
+  await prisma.$transaction(async (tx) => {
+    await tx.lesson.update({
+      where: { id: req.params.id },
+      data: {
+        title: title ?? existing.title,
+        description: description ?? existing.description,
+        status: status ?? existing.status,
+        publishedAt:
+          status === 'PUBLISHED'
+            ? existing.publishedAt ?? new Date()
+            : status === 'DRAFT'
+              ? null
+              : existing.publishedAt,
+      },
+    });
 
-  if (tasks) {
-    for (const task of tasks) {
-      if (task.id) {
-        await prisma.task.update({
-          where: { id: task.id },
-          data: {
-            prompt: task.prompt,
-            type: task.type,
-            order: task.order ?? 0,
-            config: task.config ?? {},
-          },
-        });
-        if (task.options) {
-          const keepIds: string[] = [];
-          for (const option of task.options) {
-            if (option.id) {
-              await prisma.taskOption.update({
-                where: { id: option.id },
-                data: { label: option.label, isCorrect: option.isCorrect ?? false },
-              });
-              keepIds.push(option.id);
-            } else {
-              const createdOption = await prisma.taskOption.create({
-                data: {
-                  taskId: task.id as string,
-                  label: option.label,
-                  isCorrect: option.isCorrect ?? false,
-                },
-              });
-              keepIds.push(createdOption.id);
-            }
-          }
-          await prisma.taskOption.deleteMany({
-            where: {
-              taskId: task.id as string,
-              ...(keepIds.length ? { id: { notIn: keepIds } } : {}),
-            },
-          });
-        }
-      } else {
-        await prisma.task.create({
-          data: {
-            lessonId: lesson.id,
-            prompt: task.prompt,
-            type: task.type,
-            order: task.order ?? 0,
-            config: task.config ?? {},
-            options: task.options
-              ? {
-                  create: task.options.map((option) => ({
-                    label: option.label,
-                    isCorrect: option.isCorrect ?? false,
-                  })),
-                }
-              : undefined,
-          },
+    if (items) {
+      await tx.lessonItem.deleteMany({ where: { lessonId: req.params.id } });
+      if (items.length) {
+        await tx.lessonItem.createMany({
+          data: items.map((item, index) => ({
+            id: item.id,
+            lessonId: req.params.id,
+            order: item.order ?? index,
+            text: item.text,
+            audioUrl: item.audioUrl,
+            segments: item.segments,
+          })),
         });
       }
     }
-  }
+  });
 
   const updated = await prisma.lesson.findUnique({
-    where: { id: lesson.id },
+    where: { id: req.params.id },
     include: {
-      tasks: { orderBy: { order: 'asc' }, include: { options: true } },
+      items: { orderBy: { order: 'asc' } },
     },
   });
 
@@ -227,62 +194,49 @@ router.delete('/lessons/:id', authenticate, async (req: AuthenticatedRequest, re
   try {
     await prisma.lesson.delete({ where: { id: req.params.id } });
     return res.status(204).send();
-  } catch (error) {
+  } catch {
     return res.status(404).json({ message: 'Lesson not found' });
   }
 });
 
-router.post(
-  '/lessons/:lessonId/tasks',
-  authenticate,
-  async (req: AuthenticatedRequest, res) => {
-    if (!requireAdmin(req, res)) return;
-    const parsed = taskBaseSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
-    }
+router.post('/lessons/:lessonId/items', authenticate, async (req: AuthenticatedRequest, res) => {
+  if (!requireAdmin(req, res)) return;
+  const parsed = createItemSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
+  }
 
-    const lesson = await prisma.lesson.findUnique({ where: { id: req.params.lessonId } });
-    if (!lesson) {
-      return res.status(404).json({ message: 'Lesson not found' });
-    }
+  const lesson = await prisma.lesson.findUnique({ where: { id: req.params.lessonId } });
+  if (!lesson) {
+    return res.status(404).json({ message: 'Lesson not found' });
+  }
 
-    const taskCount = await prisma.task.count({ where: { lessonId: lesson.id } });
-    const created = await prisma.task.create({
-      data: {
-        lessonId: lesson.id,
-        prompt: parsed.data.prompt,
-        type: parsed.data.type,
-        order: parsed.data.order ?? taskCount,
-        config: parsed.data.config ?? {},
-        options: parsed.data.options
-          ? {
-              create: parsed.data.options.map((option) => ({
-                label: option.label,
-                isCorrect: option.isCorrect ?? false,
-              })),
-            }
-          : undefined,
-      },
-      include: { options: true },
-    });
+  const itemCount = await prisma.lessonItem.count({ where: { lessonId: lesson.id } });
+  const created = await prisma.lessonItem.create({
+    data: {
+      lessonId: lesson.id,
+      text: parsed.data.text,
+      audioUrl: parsed.data.audioUrl,
+      order: parsed.data.order ?? itemCount,
+      segments: parsed.data.segments,
+    },
+  });
 
-    return res.status(201).json({ task: created });
-  },
-);
+  return res.status(201).json({ item: created });
+});
 
 router.delete(
-  '/lessons/:lessonId/tasks/:taskId',
+  '/lessons/:lessonId/items/:itemId',
   authenticate,
   async (req: AuthenticatedRequest, res) => {
     if (!requireAdmin(req, res)) return;
-    const task = await prisma.task.findFirst({
-      where: { id: req.params.taskId, lessonId: req.params.lessonId },
+    const item = await prisma.lessonItem.findFirst({
+      where: { id: req.params.itemId, lessonId: req.params.lessonId },
     });
-    if (!task) {
-      return res.status(404).json({ message: 'Task not found' });
+    if (!item) {
+      return res.status(404).json({ message: 'Lesson item not found' });
     }
-    await prisma.task.delete({ where: { id: task.id } });
+    await prisma.lessonItem.delete({ where: { id: item.id } });
     return res.status(204).send();
   },
 );

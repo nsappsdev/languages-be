@@ -22,6 +22,28 @@ const swaggerDefinition = {
       },
     },
     schemas: {
+      LessonItemSegment: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          text: { type: 'string' },
+          startMs: { type: 'integer', example: 0 },
+          endMs: { type: 'integer', example: 1800 },
+        },
+      },
+      LessonItem: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          text: { type: 'string' },
+          audioUrl: { type: 'string', example: '/media/audio/greetings-1.wav' },
+          order: { type: 'integer' },
+          segments: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/LessonItemSegment' },
+          },
+        },
+      },
       Lesson: {
         type: 'object',
         properties: {
@@ -31,29 +53,25 @@ const swaggerDefinition = {
           status: { type: 'string', enum: ['DRAFT', 'PUBLISHED'] },
           createdAt: { type: 'string', format: 'date-time' },
           updatedAt: { type: 'string', format: 'date-time' },
-        },
-      },
-      Task: {
-        type: 'object',
-        properties: {
-          id: { type: 'string' },
-          prompt: { type: 'string' },
-          type: { type: 'string', enum: ['PICK_ONE', 'FILL_IN_BLANK', 'MATCH'] },
-          order: { type: 'integer' },
-          config: { type: 'object' },
-          options: {
+          items: {
             type: 'array',
-            items: { $ref: '#/components/schemas/TaskOption' },
+            items: { $ref: '#/components/schemas/LessonItem' },
           },
         },
       },
-      TaskOption: {
+      LessonItemRequest: {
         type: 'object',
         properties: {
           id: { type: 'string' },
-          label: { type: 'string' },
-          isCorrect: { type: 'boolean' },
+          text: { type: 'string' },
+          audioUrl: { type: 'string', example: '/media/audio/greetings-1.wav' },
+          order: { type: 'integer' },
+          segments: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/LessonItemSegment' },
+          },
         },
+        required: ['text', 'audioUrl', 'segments'],
       },
       LessonRequest: {
         type: 'object',
@@ -61,32 +79,12 @@ const swaggerDefinition = {
           title: { type: 'string' },
           description: { type: 'string' },
           status: { type: 'string', enum: ['DRAFT', 'PUBLISHED'] },
-          tasks: {
+          items: {
             type: 'array',
-            items: { $ref: '#/components/schemas/TaskRequest' },
+            items: { $ref: '#/components/schemas/LessonItemRequest' },
           },
         },
         required: ['title'],
-      },
-      TaskRequest: {
-        type: 'object',
-        properties: {
-          prompt: { type: 'string' },
-          type: { type: 'string', enum: ['PICK_ONE', 'FILL_IN_BLANK', 'MATCH'] },
-          order: { type: 'integer' },
-          config: { type: 'object' },
-          options: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                label: { type: 'string' },
-                isCorrect: { type: 'boolean' },
-              },
-            },
-          },
-        },
-        required: ['prompt', 'type'],
       },
       User: {
         type: 'object',
@@ -182,8 +180,8 @@ const swaggerDefinition = {
           totalLessons: { type: 'integer', example: 12 },
           publishedLessons: { type: 'integer', example: 8 },
           draftLessons: { type: 'integer', example: 4 },
-          totalTasks: { type: 'integer', example: 48 },
-          avgTasksPerLesson: { type: 'number', example: 4 },
+          totalItems: { type: 'integer', example: 48 },
+          avgItemsPerLesson: { type: 'number', example: 4 },
           latestPublishedLesson: {
             type: 'object',
             nullable: true,
@@ -274,12 +272,10 @@ const swaggerDefinition = {
           lessonTitle: { type: 'string', nullable: true },
           lessonStatus: { type: 'string', nullable: true },
           totalEvents: { type: 'integer' },
-          attemptEvents: { type: 'integer' },
-          correctAttempts: { type: 'integer' },
-          tasksCompleted: { type: 'integer' },
-          bestScore: { type: 'integer', nullable: true },
-          lastScore: { type: 'integer', nullable: true },
+          itemsStarted: { type: 'integer' },
+          itemsCompleted: { type: 'integer' },
           bestCompletion: { type: 'integer', nullable: true },
+          lastCompletion: { type: 'integer', nullable: true },
           lastActivityAt: { type: 'string', format: 'date-time' },
         },
       },
@@ -299,14 +295,21 @@ const swaggerDefinition = {
         properties: {
           idempotencyKey: { type: 'string' },
           lessonId: { type: 'string' },
-          taskId: { type: 'string' },
-          eventType: { type: 'string', enum: ['TASK_ATTEMPT', 'TASK_COMPLETED', 'LESSON_COMPLETED'] },
-          attemptNumber: { type: 'integer' },
-          isCorrect: { type: 'boolean' },
-          score: { type: 'integer' },
+          lessonItemId: { type: 'string' },
+          eventType: { type: 'string', enum: ['ITEM_STARTED', 'ITEM_COMPLETED', 'LESSON_COMPLETED'] },
           completion: { type: 'integer' },
           clientTimestamp: { type: 'string', format: 'date-time' },
           payload: { type: 'object' },
+        },
+      },
+      UploadedAudioFile: {
+        type: 'object',
+        properties: {
+          audioUrl: { type: 'string', example: '/media/audio/greetings-1-1711141200000-abcd1234.wav' },
+          fileName: { type: 'string' },
+          originalName: { type: 'string' },
+          mimeType: { type: 'string', example: 'audio/wav' },
+          size: { type: 'integer', example: 189630 },
         },
       },
       ProgressEventsRequest: {
@@ -352,6 +355,10 @@ const swaggerDefinition = {
     {
       name: 'Progress',
       description: 'Learner progress ingestion endpoints.',
+    },
+    {
+      name: 'Media',
+      description: 'Admin media upload endpoints.',
     },
   ],
   paths: {
@@ -541,7 +548,7 @@ const swaggerDefinition = {
     '/lessons': {
       get: {
         tags: ['Lessons'],
-        summary: 'List all lessons with tasks',
+        summary: 'List all lessons with ordered lesson items',
         security: [{ bearerAuth: [] }],
         responses: {
           200: {
@@ -553,20 +560,7 @@ const swaggerDefinition = {
                   properties: {
                     lessons: {
                       type: 'array',
-                      items: {
-                        allOf: [
-                          { $ref: '#/components/schemas/Lesson' },
-                          {
-                            type: 'object',
-                            properties: {
-                              tasks: {
-                                type: 'array',
-                                items: { $ref: '#/components/schemas/Task' },
-                              },
-                            },
-                          },
-                        ],
-                      },
+                      items: { $ref: '#/components/schemas/Lesson' },
                     },
                   },
                 },
@@ -591,20 +585,7 @@ const swaggerDefinition = {
                 schema: {
                   type: 'object',
                   properties: {
-                    lesson: {
-                      allOf: [
-                        { $ref: '#/components/schemas/Lesson' },
-                        {
-                          type: 'object',
-                          properties: {
-                            tasks: {
-                              type: 'array',
-                              items: { $ref: '#/components/schemas/Task' },
-                            },
-                          },
-                        },
-                      ],
-                    },
+                    lesson: { $ref: '#/components/schemas/Lesson' },
                   },
                 },
               },
@@ -627,19 +608,7 @@ const swaggerDefinition = {
                 schema: {
                   type: 'object',
                   properties: {
-                    lesson: {
-                      allOf: [
-                        { $ref: '#/components/schemas/Lesson' },
-                        {
-                          properties: {
-                            tasks: {
-                              type: 'array',
-                              items: { $ref: '#/components/schemas/Task' },
-                            },
-                          },
-                        },
-                      ],
-                    },
+                    lesson: { $ref: '#/components/schemas/Lesson' },
                   },
                 },
               },
@@ -676,19 +645,7 @@ const swaggerDefinition = {
                 schema: {
                   type: 'object',
                   properties: {
-                    lesson: {
-                      allOf: [
-                        { $ref: '#/components/schemas/Lesson' },
-                        {
-                          properties: {
-                            tasks: {
-                              type: 'array',
-                              items: { $ref: '#/components/schemas/Task' },
-                            },
-                          },
-                        },
-                      ],
-                    },
+                    lesson: { $ref: '#/components/schemas/Lesson' },
                   },
                 },
               },
@@ -712,17 +669,17 @@ const swaggerDefinition = {
         },
       },
     },
-    '/lessons/{lessonId}/tasks': {
+    '/lessons/{lessonId}/items': {
       post: {
         tags: ['Lessons'],
-        summary: 'Create task within lesson',
+        summary: 'Create lesson item within lesson',
         security: [{ bearerAuth: [] }],
         parameters: [{ name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } }],
         requestBody: {
           required: true,
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/TaskRequest' },
+              schema: { $ref: '#/components/schemas/LessonItemRequest' },
             },
           },
         },
@@ -733,7 +690,7 @@ const swaggerDefinition = {
               'application/json': {
                 schema: {
                   type: 'object',
-                  properties: { task: { $ref: '#/components/schemas/Task' } },
+                  properties: { item: { $ref: '#/components/schemas/LessonItem' } },
                 },
               },
             },
@@ -745,19 +702,70 @@ const swaggerDefinition = {
         },
       },
     },
-    '/lessons/{lessonId}/tasks/{taskId}': {
+    '/lessons/{lessonId}/items/{itemId}': {
       delete: {
         tags: ['Lessons'],
-        summary: 'Delete task from lesson',
+        summary: 'Delete lesson item from lesson',
         security: [{ bearerAuth: [] }],
         parameters: [
           { name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } },
-          { name: 'taskId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'itemId', in: 'path', required: true, schema: { type: 'string' } },
         ],
         responses: {
           204: { description: 'Deleted' },
           404: {
-            description: 'Task not found',
+            description: 'Lesson item not found',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
+            },
+          },
+        },
+      },
+    },
+    '/media/audio': {
+      post: {
+        tags: ['Media'],
+        summary: 'Upload lesson audio file',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'multipart/form-data': {
+              schema: {
+                type: 'object',
+                required: ['file'],
+                properties: {
+                  file: {
+                    type: 'string',
+                    format: 'binary',
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: {
+            description: 'Audio uploaded',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    file: { $ref: '#/components/schemas/UploadedAudioFile' },
+                  },
+                },
+              },
+            },
+          },
+          400: {
+            description: 'Invalid upload',
+            content: {
+              'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
+            },
+          },
+          403: {
+            description: 'Forbidden',
             content: {
               'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
             },
@@ -768,7 +776,7 @@ const swaggerDefinition = {
     '/analytics/overview': {
       get: {
         tags: ['Analytics'],
-        summary: 'Get lesson/task summary metrics',
+        summary: 'Get lesson/item summary metrics',
         security: [{ bearerAuth: [] }],
         responses: {
           200: {

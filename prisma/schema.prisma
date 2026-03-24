@@ -34,41 +34,26 @@ model Lesson {
   updatedAt   DateTime     @updatedAt
   authorId    String
   author      User         @relation("LessonAuthor", fields: [authorId], references: [id])
-  tasks       Task[]
+  items       LessonItem[]
 }
 
-model Task {
+model LessonItem {
   id        String       @id @default(cuid())
   lessonId  String
   lesson    Lesson       @relation(fields: [lessonId], references: [id])
-  prompt    String
-  type      TaskType
   order     Int
-  config    Json
+  text      String
+  audioUrl  String
+  segments  Json
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
-  options   TaskOption[]
-}
 
-model TaskOption {
-  id        String   @id @default(cuid())
-  taskId    String
-  task      Task     @relation(fields: [taskId], references: [id])
-  label     String
-  isCorrect Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  @@unique([lessonId, order])
 }
 
 enum LessonStatus {
   DRAFT
   PUBLISHED
-}
-
-enum TaskType {
-  PICK_ONE
-  FILL_IN_BLANK
-  MATCH
 }
 
 model VocabularyEntry {
@@ -126,11 +111,8 @@ model LearnerProgressEvent {
   userId          String
   user            User              @relation(fields: [userId], references: [id])
   lessonId        String
-  taskId          String?
+  lessonItemId    String?
   eventType       ProgressEventType
-  attemptNumber   Int?
-  isCorrect       Boolean?
-  score           Int?
   completion      Int?
   clientTimestamp DateTime?
   idempotencyKey  String            @unique
@@ -142,8 +124,8 @@ model LearnerProgressEvent {
 }
 
 enum ProgressEventType {
-  TASK_ATTEMPT
-  TASK_COMPLETED
+  ITEM_STARTED
+  ITEM_COMPLETED
   LESSON_COMPLETED
 }
 
