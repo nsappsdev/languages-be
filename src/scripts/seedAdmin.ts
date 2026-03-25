@@ -391,6 +391,204 @@ const seedLessonDefinitions: SeedLesson[] = [
 
 const legacyVocabularyTermsToRemove = ['nice to meet you'];
 
+const autoVocabularyTranslationsAm: Record<string, string> = {
+  about: 'մասին',
+  afraid: 'վախեցած',
+  after: 'հետո',
+  air: 'օդ',
+  also: 'նաև',
+  always: 'միշտ',
+  anna: 'Աննա',
+  apples: 'խնձորներ',
+  around: 'շուրջ',
+  back: 'հետ',
+  bananas: 'բանաններ',
+  basket: 'զամբյուղ',
+  basketball: 'բասկետբոլ',
+  because: 'որովհետև',
+  benches: 'նստարաններ',
+  best: 'լավագույն',
+  better: 'ավելի լավ',
+  book: 'գիրք',
+  books: 'գրքեր',
+  both: 'երկուսն էլ',
+  bought: 'գնեց',
+  bread: 'հաց',
+  breakfast: 'նախաճաշ',
+  brush: 'մաքրել',
+  buy: 'գնել',
+  calm: 'հանգիստ',
+  cashier: 'դրամարկղի աշխատող',
+  cheese: 'պանիր',
+  children: 'երեխաներ',
+  cinema: 'կինոթատրոն',
+  coffee: 'սուրճ',
+  come: 'գալ',
+  cook: 'պատրաստել',
+  countries: 'երկրներ',
+  cream: 'կրեմ',
+  cucumbers: 'վարունգներ',
+  daily: 'ամենօրյա',
+  dairy: 'կաթնամթերք',
+  day: 'օր',
+  decided: 'որոշեց',
+  different: 'տարբեր',
+  difficult: 'դժվար',
+  dinner: 'ընթրիք',
+  dogs: 'շներ',
+  dreams: 'երազանքներ',
+  drink: 'խմել',
+  each: 'յուրաքանչյուր',
+  easier: 'ավելի հեշտ',
+  eat: 'ուտել',
+  eggs: 'ձվեր',
+  end: 'վերջ',
+  english: 'անգլերեն',
+  enjoy: 'վայելել',
+  evening: 'երեկո',
+  every: 'ամեն',
+  everything: 'ամեն ինչ',
+  exciting: 'հուզիչ',
+  face: 'դեմք',
+  far: 'հեռու',
+  feel: 'զգալ',
+  first: 'առաջին',
+  flowers: 'ծաղիկներ',
+  fluently: 'սահուն',
+  food: 'սնունդ',
+  football: 'ֆուտբոլ',
+  fresh: 'թարմ',
+  friend: 'ընկեր',
+  friendly: 'ընկերասեր',
+  friends: 'ընկերներ',
+  fruit: 'միրգ',
+  funny: 'զվարճալի',
+  future: 'ապագա',
+  games: 'խաղեր',
+  go: 'գնալ',
+  goal: 'նպատակ',
+  going: 'գնալ',
+  good: 'լավ',
+  grass: 'խոտ',
+  grocery: 'մթերք',
+  happy: 'երջանիկ',
+  have: 'ունենալ',
+  hello: 'բարև',
+  help: 'օգնել',
+  helps: 'օգնում է',
+  home: 'տուն',
+  house: 'տուն',
+  important: 'կարևոր',
+  inside: 'ներսում',
+  interesting: 'հետաքրքիր',
+  job: 'աշխատանք',
+  kind: 'բարի',
+  know: 'իմանալ',
+  known: 'ճանաչել',
+  language: 'լեզու',
+  laugh: 'ծիծաղել',
+  laughing: 'ծիծաղող',
+  learn: 'սովորել',
+  learning: 'սովորում',
+  life: 'կյանք',
+  like: 'հավանել',
+  likes: 'հավանում է',
+  listen: 'լսել',
+  listened: 'լսեց',
+  make: 'պատրաստել',
+  makes: 'դարձնում է',
+  many: 'շատ',
+  mark: 'Մարկ',
+  meet: 'հանդիպել',
+  met: 'հանդիպեց',
+  milk: 'կաթ',
+  mistakes: 'սխալներ',
+  morning: 'առավոտ',
+  music: 'երաժշտություն',
+  name: 'անուն',
+  near: 'մոտ',
+  need: 'կարիք ունենալ',
+  new: 'նոր',
+  nice: 'հաճելի',
+  now: 'հիմա',
+  office: 'գրասենյակ',
+  other: 'այլ',
+  others: 'ուրիշներ',
+  our: 'մեր',
+  park: 'այգի',
+  patient: 'համբերատար',
+  pay: 'վճարել',
+  people: 'մարդիկ',
+  perfect: 'կատարյալ',
+  pick: 'ընտրել',
+  plans: 'ծրագրեր',
+  play: 'խաղալ',
+  playing: 'խաղում',
+  practice: 'վարժվել',
+  read: 'կարդալ',
+  relaxed: 'հանգստացած',
+  relaxing: 'հանգստացնող',
+  routine: 'առօրյա',
+  sat: 'նստեց',
+  saw: 'տեսավ',
+  says: 'ասում է',
+  school: 'դպրոց',
+  section: 'բաժին',
+  shopping: 'գնումներ',
+  simple: 'պարզ',
+  sitting: 'նստած',
+  smile: 'ժպտալ',
+  some: 'մի քանի',
+  sometimes: 'երբեմն',
+  speak: 'խոսել',
+  speaking: 'խոսել',
+  spend: 'անցկացնել',
+  sports: 'սպորտ',
+  start: 'սկսել',
+  store: 'խանութ',
+  study: 'սովորել',
+  sunny: 'արևոտ',
+  take: 'վերցնել',
+  takes: 'վերցնում է',
+  talk: 'խոսել',
+  teeth: 'ատամներ',
+  their: 'իրենց',
+  then: 'հետո',
+  there: 'այնտեղ',
+  things: 'բաներ',
+  time: 'ժամանակ',
+  today: 'այսօր',
+  together: 'միասին',
+  tomatoes: 'լոլիկներ',
+  trees: 'ծառեր',
+  trust: 'վստահել',
+  trusts: 'վստահում է',
+  try: 'փորձել',
+  tv: 'հեռուստացույց',
+  understand: 'հասկանալ',
+  up: 'վեր',
+  useful: 'օգտակար',
+  usually: 'սովորաբար',
+  vegetables: 'բանջարեղեն',
+  very: 'շատ',
+  videos: 'տեսանյութեր',
+  wake: 'արթնանալ',
+  walk: 'քայլել',
+  walking: 'քայլում',
+  want: 'ցանկանալ',
+  warm: 'տաք',
+  wash: 'լվանալ',
+  watch: 'դիտել',
+  weather: 'եղանակ',
+  weekends: 'հանգստյան օրեր',
+  went: 'գնաց',
+  when: 'երբ',
+  words: 'բառեր',
+  work: 'աշխատանք',
+  years: 'տարիներ',
+  yesterday: 'երեկ',
+};
+
 async function seedAdmin() {
   const { hash, salt } = hashPassword(password);
 
@@ -540,6 +738,48 @@ async function seedVocabulary(authorId: string) {
   console.log('Seeded vocabulary entries with translations.');
 }
 
+async function seedAutoVocabularyTranslations() {
+  for (const [englishText, translation] of Object.entries(autoVocabularyTranslationsAm)) {
+    const entry = await prisma.vocabularyEntry.findFirst({
+      where: {
+        englishText: {
+          equals: canonicalizeVocabularyText(englishText),
+          mode: 'insensitive',
+        },
+      },
+    });
+
+    if (!entry) {
+      continue;
+    }
+
+    const existingTranslation = await prisma.vocabularyTranslation.findFirst({
+      where: {
+        entryId: entry.id,
+        languageCode: 'am',
+      },
+    });
+
+    if (existingTranslation) {
+      await prisma.vocabularyTranslation.update({
+        where: { id: existingTranslation.id },
+        data: { translation },
+      });
+      continue;
+    }
+
+    await prisma.vocabularyTranslation.create({
+      data: {
+        entryId: entry.id,
+        languageCode: 'am',
+        translation,
+      },
+    });
+  }
+
+  console.log('Seeded Armenian translations for auto-ingested lesson words.');
+}
+
 async function main() {
   const admin = await seedAdmin();
   await seedMobileUser();
@@ -550,6 +790,7 @@ async function main() {
     admin.id,
   );
   await seedVocabulary(admin.id);
+  await seedAutoVocabularyTranslations();
 }
 
 main()
