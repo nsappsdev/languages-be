@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { authenticate, AuthenticatedRequest } from '../middleware/authenticate';
+import { canonicalizeVocabularyText } from '../lib/vocabularyIngestion';
 
 const router = Router();
 
@@ -18,12 +19,39 @@ const translationSchema = z.object({
   usageExample: z.string().optional(),
 });
 
-router.get('/vocabulary', authenticate, async (_req: AuthenticatedRequest, res) => {
-  const entries = await prisma.vocabularyEntry.findMany({
-    orderBy: { updatedAt: 'desc' },
-    include: { translations: true },
+const vocabularyQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(10).default(10),
+});
+
+const vocabularyLookupSchema = z.object({
+  items: z.array(z.string().trim().min(1)).min(1).max(100),
+});
+
+router.get('/vocabulary', authenticate, async (req: AuthenticatedRequest, res) => {
+  const parsedQuery = vocabularyQuerySchema.safeParse(req.query);
+  if (!parsedQuery.success) {
+    return res.status(400).json({ message: 'Invalid query', issues: parsedQuery.error.flatten() });
+  }
+
+  const { page, pageSize } = parsedQuery.data;
+  const [entries, total] = await Promise.all([
+    prisma.vocabularyEntry.findMany({
+      orderBy: { englishText: 'asc' },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+      include: { translations: true },
+    }),
+    prisma.vocabularyEntry.count(),
+  ]);
+
+  return res.json({
+    entries,
+    page,
+    pageSize,
+    total,
+    pageCount: Math.max(1, Math.ceil(total / pageSize)),
   });
-  return res.json({ entries });
 });
 
 router.get('/vocabulary/:id', authenticate, async (req: AuthenticatedRequest, res) => {
@@ -33,6 +61,50 @@ router.get('/vocabulary/:id', authenticate, async (req: AuthenticatedRequest, re
   });
   if (!entry) return res.status(404).json({ message: 'Vocabulary entry not found' });
   return res.json({ entry });
+});
+
+router.post('/vocabulary/lookup', authenticate, async (req: AuthenticatedRequest, res) => {
+  const parsed = vocabularyLookupSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
+  }
+
+  const normalizedItems = Array.from(
+    new Set(
+      parsed.data.items
+        .map((item) => canonicalizeVocabularyText(item))
+        .filter((item) => item.length > 0),
+    ),
+  );
+
+  if (!normalizedItems.length) {
+    return res.status(400).json({ message: 'No valid vocabulary lookup terms found' });
+  }
+
+  const entries = await prisma.vocabularyEntry.findMany({
+    where: {
+      OR: normalizedItems.map((item) => ({
+        englishText: {
+          equals: item,
+          mode: 'insensitive',
+        },
+      })),
+    },
+    include: {
+      translations: true,
+    },
+  });
+
+  const entriesByText = new Map(entries.map((entry) => [entry.englishText.toLowerCase(), entry]));
+  const orderedEntries = normalizedItems
+    .map((item) => entriesByText.get(item.toLowerCase()))
+    .filter((entry): entry is (typeof entries)[number] => Boolean(entry));
+
+  return res.json({
+    entries: orderedEntries,
+    resolved: orderedEntries.length,
+    requested: parsed.data.items.length,
+  });
 });
 
 router.post('/vocabulary', authenticate, async (req: AuthenticatedRequest, res) => {
@@ -49,9 +121,17 @@ router.post('/vocabulary', authenticate, async (req: AuthenticatedRequest, res) 
     return res.status(400).json({ message: 'Invalid translations', issues: translations.error.flatten() });
   }
 
+  const englishText = canonicalizeVocabularyText(parsed.data.englishText);
+  const duplicate = await prisma.vocabularyEntry.findFirst({
+    where: { englishText: { equals: englishText, mode: 'insensitive' } },
+  });
+  if (duplicate) {
+    return res.status(409).json({ message: 'Vocabulary entry already exists' });
+  }
+
   const created = await prisma.vocabularyEntry.create({
     data: {
-      englishText: parsed.data.englishText,
+      englishText,
       kind: parsed.data.kind ?? 'WORD',
       notes: parsed.data.notes,
       tags: parsed.data.tags ?? [],
@@ -78,10 +158,27 @@ router.patch('/vocabulary/:id', authenticate, async (req: AuthenticatedRequest, 
   });
   if (!existing) return res.status(404).json({ message: 'Vocabulary entry not found' });
 
+  const nextEnglishText =
+    parsed.data.englishText !== undefined
+      ? canonicalizeVocabularyText(parsed.data.englishText)
+      : existing.englishText;
+
+  if (nextEnglishText !== existing.englishText) {
+    const duplicate = await prisma.vocabularyEntry.findFirst({
+      where: {
+        id: { not: existing.id },
+        englishText: { equals: nextEnglishText, mode: 'insensitive' },
+      },
+    });
+    if (duplicate) {
+      return res.status(409).json({ message: 'Vocabulary entry already exists' });
+    }
+  }
+
   const updated = await prisma.vocabularyEntry.update({
     where: { id: req.params.id },
     data: {
-      englishText: parsed.data.englishText ?? existing.englishText,
+      englishText: nextEnglishText,
       notes: parsed.data.notes ?? existing.notes,
       tags: parsed.data.tags ?? existing.tags,
       kind: parsed.data.kind ?? existing.kind,
