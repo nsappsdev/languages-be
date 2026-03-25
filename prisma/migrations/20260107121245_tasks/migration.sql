@@ -1,9 +1,6 @@
 -- CreateEnum
 CREATE TYPE "LessonStatus" AS ENUM ('DRAFT', 'PUBLISHED');
 
--- CreateEnum
-CREATE TYPE "TaskType" AS ENUM ('PICK_ONE', 'FILL_IN_BLANK', 'MATCH');
-
 -- CreateTable
 CREATE TABLE "Lesson" (
     "id" TEXT NOT NULL,
@@ -19,36 +16,24 @@ CREATE TABLE "Lesson" (
 );
 
 -- CreateTable
-CREATE TABLE "Task" (
+CREATE TABLE "LessonItem" (
     "id" TEXT NOT NULL,
     "lessonId" TEXT NOT NULL,
-    "prompt" TEXT NOT NULL,
-    "type" "TaskType" NOT NULL,
     "order" INTEGER NOT NULL,
-    "config" JSONB NOT NULL,
+    "text" TEXT NOT NULL,
+    "audioUrl" TEXT NOT NULL,
+    "segments" JSONB NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
-    CONSTRAINT "Task_pkey" PRIMARY KEY ("id")
+    CONSTRAINT "LessonItem_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable
-CREATE TABLE "TaskOption" (
-    "id" TEXT NOT NULL,
-    "taskId" TEXT NOT NULL,
-    "label" TEXT NOT NULL,
-    "isCorrect" BOOLEAN NOT NULL DEFAULT false,
-    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP(3) NOT NULL,
-
-    CONSTRAINT "TaskOption_pkey" PRIMARY KEY ("id")
-);
+-- CreateIndex
+CREATE UNIQUE INDEX "LessonItem_lessonId_order_key" ON "LessonItem"("lessonId", "order");
 
 -- AddForeignKey
 ALTER TABLE "Lesson" ADD CONSTRAINT "Lesson_authorId_fkey" FOREIGN KEY ("authorId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE "Task" ADD CONSTRAINT "Task_lessonId_fkey" FOREIGN KEY ("lessonId") REFERENCES "Lesson"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- AddForeignKey
-ALTER TABLE "TaskOption" ADD CONSTRAINT "TaskOption_taskId_fkey" FOREIGN KEY ("taskId") REFERENCES "Task"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+ALTER TABLE "LessonItem" ADD CONSTRAINT "LessonItem_lessonId_fkey" FOREIGN KEY ("lessonId") REFERENCES "Lesson"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

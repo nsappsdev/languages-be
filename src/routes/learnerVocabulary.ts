@@ -181,14 +181,15 @@ router.patch(learnerEntryRoutePath, authenticate, async (req: AuthenticatedReque
 
 router.delete(learnerEntryRoutePath, authenticate, async (req: AuthenticatedRequest, res) => {
   if (!req.user) return res.status(401).json({ message: 'Unauthorized' });
-  try {
-    await prisma.learnerVocabulary.delete({
-      where: { userId_entryId: { userId: req.user.id, entryId: req.params.entryId } },
-    });
-    return res.status(204).send();
-  } catch (error) {
-    return res.status(404).json({ message: 'Learner vocabulary entry not found' });
-  }
+
+  await prisma.learnerVocabulary.deleteMany({
+    where: {
+      userId: req.user.id,
+      entryId: req.params.entryId,
+    },
+  });
+
+  return res.status(204).send();
 });
 
 export { router as learnerVocabularyRouter };

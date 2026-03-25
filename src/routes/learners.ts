@@ -96,12 +96,10 @@ type LearnerLessonProgressRow = {
   lessonTitle: string | null;
   lessonStatus: string | null;
   totalEvents: number;
-  attemptEvents: number;
-  correctAttempts: number;
-  tasksCompleted: number;
-  bestScore: number | null;
-  lastScore: number | null;
+  itemsStarted: number;
+  itemsCompleted: number;
   bestCompletion: number | null;
+  lastCompletion: number | null;
   lastActivityAt: Date;
 };
 
@@ -133,23 +131,17 @@ router.get('/learners/:learnerId/progress-summary', authenticate, async (req: Au
       lesson."title" AS "lessonTitle",
       lesson."status"::text AS "lessonStatus",
       event_stats."totalEvents" AS "totalEvents",
-      event_stats."attemptEvents" AS "attemptEvents",
-      event_stats."correctAttempts" AS "correctAttempts",
-      event_stats."tasksCompleted" AS "tasksCompleted",
-      event_stats."bestScore" AS "bestScore",
-      latest_completion."score" AS "lastScore",
+      event_stats."itemsStarted" AS "itemsStarted",
+      event_stats."itemsCompleted" AS "itemsCompleted",
       event_stats."bestCompletion" AS "bestCompletion",
+      latest_completion."completion" AS "lastCompletion",
       event_stats."lastActivityAt" AS "lastActivityAt"
     FROM (
       SELECT
         event."lessonId" AS "lessonId",
         COUNT(*)::int AS "totalEvents",
-        COUNT(*) FILTER (WHERE event."eventType" = 'TASK_ATTEMPT')::int AS "attemptEvents",
-        COUNT(*) FILTER (
-          WHERE event."eventType" = 'TASK_ATTEMPT' AND event."isCorrect" = true
-        )::int AS "correctAttempts",
-        COUNT(DISTINCT event."taskId") FILTER (WHERE event."eventType" = 'TASK_COMPLETED')::int AS "tasksCompleted",
-        MAX(event."score") FILTER (WHERE event."eventType" = 'LESSON_COMPLETED')::int AS "bestScore",
+        COUNT(DISTINCT event."lessonItemId") FILTER (WHERE event."eventType" = 'ITEM_STARTED')::int AS "itemsStarted",
+        COUNT(DISTINCT event."lessonItemId") FILTER (WHERE event."eventType" = 'ITEM_COMPLETED')::int AS "itemsCompleted",
         MAX(event."completion")::int AS "bestCompletion",
         MAX(event."createdAt") AS "lastActivityAt"
       FROM "LearnerProgressEvent" event
@@ -159,12 +151,12 @@ router.get('/learners/:learnerId/progress-summary', authenticate, async (req: Au
     LEFT JOIN "Lesson" lesson
       ON lesson."id" = event_stats."lessonId"
     LEFT JOIN LATERAL (
-      SELECT event."score"
+      SELECT event."completion"
       FROM "LearnerProgressEvent" event
       WHERE event."userId" = ${learnerId}
         AND event."lessonId" = event_stats."lessonId"
         AND event."eventType" = 'LESSON_COMPLETED'
-        AND event."score" IS NOT NULL
+        AND event."completion" IS NOT NULL
       ORDER BY event."createdAt" DESC
       LIMIT 1
     ) latest_completion
