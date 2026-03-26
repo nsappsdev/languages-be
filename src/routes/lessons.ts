@@ -2,6 +2,7 @@ import { Response, Router } from 'express';
 import { z } from 'zod';
 import { authenticate, AuthenticatedRequest } from '../middleware/authenticate';
 import { prisma } from '../lib/prisma';
+import { ensureVocabularyEntriesForLessonTexts } from '../lib/vocabularyIngestion';
 
 const router = Router();
 
@@ -11,12 +12,12 @@ const lessonBaseSchema = z.object({
   status: z.enum(['DRAFT', 'PUBLISHED']).optional(),
 });
 
-const audioUrlSchema = z.string().trim().min(1).refine(
-  (value) => value.startsWith('/') || /^https?:\/\//i.test(value),
-  {
-    message: 'audioUrl must be an absolute URL or a root-relative media path',
-  },
-);
+const audioUrlSchema = z
+  .string()
+  .trim()
+  .refine((value) => value.length === 0 || value.startsWith('/') || /^https?:\/\//i.test(value), {
+    message: 'audioUrl must be empty, an absolute URL, or a root-relative media path',
+  });
 
 const segmentSchema = z
   .object({
@@ -126,6 +127,14 @@ router.post('/lessons', authenticate, async (req: AuthenticatedRequest, res) => 
     },
   });
 
+  if (items?.length) {
+    await ensureVocabularyEntriesForLessonTexts(
+      prisma,
+      items.map((item) => item.text),
+      req.user?.id,
+    );
+  }
+
   return res.status(201).json({ lesson: created });
 });
 
@@ -145,6 +154,7 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
   }
 
   const { title, description, status, items } = parsed.data;
+  const itemTextsForVocabulary = items?.map((item) => item.text) ?? null;
 
   await prisma.$transaction(async (tx) => {
     await tx.lesson.update({
@@ -178,6 +188,14 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
       }
     }
   });
+
+  if (itemTextsForVocabulary?.length) {
+    await ensureVocabularyEntriesForLessonTexts(
+      prisma,
+      itemTextsForVocabulary,
+      req.user?.id,
+    );
+  }
 
   const updated = await prisma.lesson.findUnique({
     where: { id: req.params.id },
@@ -221,6 +239,8 @@ router.post('/lessons/:lessonId/items', authenticate, async (req: AuthenticatedR
       segments: parsed.data.segments,
     },
   });
+
+  await ensureVocabularyEntriesForLessonTexts(prisma, [parsed.data.text], req.user?.id);
 
   return res.status(201).json({ item: created });
 });
