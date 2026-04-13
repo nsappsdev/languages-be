@@ -12,6 +12,8 @@ import { learnerVocabularyRouter } from './routes/learnerVocabulary';
 import { learnersRouter } from './routes/learners';
 import { progressRouter } from './routes/progress';
 import { mediaRouter } from './routes/media';
+import { lessonDictionaryRouter } from './routes/lessonDictionaries';
+import { settingsRouter } from './routes/settings';
 
 const app = express();
 
@@ -37,6 +39,8 @@ app.use('/api', learnerVocabularyRouter);
 app.use('/api', learnersRouter);
 app.use('/api', progressRouter);
 app.use('/api', mediaRouter);
+app.use('/api', lessonDictionaryRouter);
+app.use('/api', settingsRouter);
 
 app.listen(config.port, () => {
   console.log(`Backend listening on http://localhost:${config.port}`);

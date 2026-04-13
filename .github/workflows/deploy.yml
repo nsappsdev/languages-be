@@ -41,12 +41,13 @@ jobs:
         env:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_PAT: ${{ secrets.GHCR_PAT }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
         with:
           host: ${{ secrets.DO_HOST }}
           username: ${{ secrets.DO_SSH_USER }}
           key: ${{ secrets.DO_SSH_KEY }}
           port: ${{ secrets.DO_SSH_PORT || '22' }}
-          envs: GHCR_USERNAME,GHCR_PAT
+          envs: GHCR_USERNAME,GHCR_PAT,SMTP_PASS
           script: |
             set -e
             cd /opt/nsapp
@@ -54,6 +55,15 @@ jobs:
             if [ ! -f docker-compose.yml ]; then
               echo "Missing /opt/nsapp/docker-compose.yml"
               exit 1
+            fi
+
+            # Inject only the sensitive API key — everything else is already in .env
+            if [ -n "$SMTP_PASS" ]; then
+              if grep -q "^SMTP_PASS=" .env 2>/dev/null; then
+                sed -i "s|^SMTP_PASS=.*|SMTP_PASS=${SMTP_PASS}|" .env
+              else
+                echo "SMTP_PASS=${SMTP_PASS}" >> .env
+              fi
             fi
 
             echo "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin

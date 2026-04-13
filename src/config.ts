@@ -13,4 +13,13 @@ export const config = {
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean),
+  appBaseUrl: process.env.APP_BASE_URL ?? 'http://localhost:4000',
+  smtp: {
+    pass: process.env.SMTP_PASS ?? '',
+    from: process.env.SMTP_FROM ?? 'noreply@lezoo.app',
+  },
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID ?? '',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
+  },
 };
