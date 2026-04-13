@@ -8,14 +8,19 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  name         String
-  role         String   @default("admin")
-  passwordHash String
-  salt         String
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                          String    @id @default(cuid())
+  email                       String    @unique
+  name                        String
+  role                        String    @default("admin")
+  passwordHash                String?
+  salt                        String?
+  authProvider                String    @default("email")
+  googleId                    String?   @unique
+  emailVerified               Boolean   @default(false)
+  emailVerificationToken      String?   @unique
+  emailVerificationExpiresAt  DateTime?
+  createdAt                   DateTime  @default(now())
+  updatedAt                   DateTime  @updatedAt
 
   lessons                  Lesson[]                       @relation("LessonAuthor")
   createdVocabularyEntries VocabularyEntry[]              @relation("VocabularyCreator")

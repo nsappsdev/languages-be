@@ -599,6 +599,7 @@ async function seedAdmin() {
       role: 'admin',
       passwordHash: hash,
       salt,
+      emailVerified: true,
     },
     create: {
       email,
@@ -606,6 +607,8 @@ async function seedAdmin() {
       role: 'admin',
       passwordHash: hash,
       salt,
+      authProvider: 'email',
+      emailVerified: true,
     },
   });
 
@@ -623,6 +626,7 @@ async function seedMobileUser() {
       role: 'learner',
       passwordHash: hash,
       salt,
+      emailVerified: true,
     },
     create: {
       email: mobileEmail,
@@ -630,6 +634,8 @@ async function seedMobileUser() {
       role: 'learner',
       passwordHash: hash,
       salt,
+      authProvider: 'email',
+      emailVerified: true,
     },
   });
 
