@@ -791,6 +791,12 @@ async function main() {
   );
   await seedVocabulary(admin.id);
   await seedAutoVocabularyTranslations();
+  await prisma.appSettings.upsert({
+    where: { id: 'global' },
+    create: { id: 'global' },
+    update: {},
+  });
+  console.log('App settings seeded.');
 }
 
 main()

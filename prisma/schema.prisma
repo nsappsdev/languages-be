@@ -183,6 +183,17 @@ enum ProgressEventType {
   LESSON_COMPLETED
 }
 
+model AppSettings {
+  id                     String   @id @default("global")
+  unknownWordRepetitions Int      @default(2)
+  mainTextFontFamily     String   @default("System")
+  mainTextFontSize       Int      @default(18)
+  translationFontFamily  String   @default("System")
+  translationFontSize    Int      @default(12)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+}
+
 model AuthRefreshToken {
   id        String    @id @default(cuid())
   tokenHash String    @unique
