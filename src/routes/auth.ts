@@ -39,10 +39,6 @@ const logoutSchema = z
   })
   .optional();
 
-const resendVerificationSchema = z.object({
-  email: z.string().email(),
-});
-
 const googleSignInSchema = z.object({
   idToken: z.string().min(1),
 });
@@ -92,17 +88,114 @@ async function issueRefreshToken(userId: string) {
   return refreshToken;
 }
 
-async function buildAuthResponse(user: { id: string; email: string; name: string; role: string }) {
+async function buildAuthResponse(user: {
+  id: string;
+  email: string;
+  name: string;
+  role: string;
+  emailVerified: boolean;
+}) {
   const refreshToken = await issueRefreshToken(user.id);
   return {
     token: createAccessToken(user),
     refreshToken,
-    user: { id: user.id, email: user.email, name: user.name, role: user.role },
+    user: {
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      emailVerified: user.emailVerified,
+    },
   };
 }
 
 function generateVerificationToken() {
   return crypto.randomBytes(32).toString('hex');
+}
+
+// Resend rate limiting
+const RESEND_MIN_INTERVAL_MS = 60 * 1000; // 1 minute between sends
+const RESEND_WINDOW_MS = 60 * 60 * 1000; // 1 hour window
+const RESEND_MAX_PER_WINDOW = 5;
+
+interface ResendRateState {
+  lastSentAt: Date | null;
+  sendCount: number;
+  windowStart: Date | null;
+}
+
+interface ResendRateCheck {
+  allowed: boolean;
+  retryAfterSeconds: number;
+  remainingAttempts: number;
+  nextWindowState: ResendRateState;
+}
+
+function evaluateResendRate(state: ResendRateState, now: Date = new Date()): ResendRateCheck {
+  const windowStart = state.windowStart && now.getTime() - state.windowStart.getTime() < RESEND_WINDOW_MS
+    ? state.windowStart
+    : null;
+  const currentCount = windowStart ? state.sendCount : 0;
+
+  if (state.lastSentAt) {
+    const sinceLastMs = now.getTime() - state.lastSentAt.getTime();
+    if (sinceLastMs < RESEND_MIN_INTERVAL_MS) {
+      return {
+        allowed: false,
+        retryAfterSeconds: Math.ceil((RESEND_MIN_INTERVAL_MS - sinceLastMs) / 1000),
+        remainingAttempts: Math.max(0, RESEND_MAX_PER_WINDOW - currentCount),
+        nextWindowState: state,
+      };
+    }
+  }
+
+  if (currentCount >= RESEND_MAX_PER_WINDOW && windowStart) {
+    const windowEnd = windowStart.getTime() + RESEND_WINDOW_MS;
+    return {
+      allowed: false,
+      retryAfterSeconds: Math.max(0, Math.ceil((windowEnd - now.getTime()) / 1000)),
+      remainingAttempts: 0,
+      nextWindowState: state,
+    };
+  }
+
+  const nextWindowStart = windowStart ?? now;
+  const nextCount = currentCount + 1;
+
+  return {
+    allowed: true,
+    retryAfterSeconds: Math.ceil(RESEND_MIN_INTERVAL_MS / 1000),
+    remainingAttempts: Math.max(0, RESEND_MAX_PER_WINDOW - nextCount),
+    nextWindowState: {
+      lastSentAt: now,
+      sendCount: nextCount,
+      windowStart: nextWindowStart,
+    },
+  };
+}
+
+function computeResendStatus(state: ResendRateState, now: Date = new Date()) {
+  const windowStart = state.windowStart && now.getTime() - state.windowStart.getTime() < RESEND_WINDOW_MS
+    ? state.windowStart
+    : null;
+  const currentCount = windowStart ? state.sendCount : 0;
+  const remainingAttempts = Math.max(0, RESEND_MAX_PER_WINDOW - currentCount);
+
+  let canResendAt: Date = now;
+  if (state.lastSentAt) {
+    const earliestByInterval = new Date(state.lastSentAt.getTime() + RESEND_MIN_INTERVAL_MS);
+    if (earliestByInterval > canResendAt) canResendAt = earliestByInterval;
+  }
+  if (remainingAttempts === 0 && windowStart) {
+    const earliestByWindow = new Date(windowStart.getTime() + RESEND_WINDOW_MS);
+    if (earliestByWindow > canResendAt) canResendAt = earliestByWindow;
+  }
+
+  return {
+    canResendAt: canResendAt.toISOString(),
+    remainingAttempts,
+    windowMaxAttempts: RESEND_MAX_PER_WINDOW,
+  };
 }
 
 // ─── HTML helpers ───────────────────────────────────────────────────────────
@@ -159,13 +252,6 @@ router.post('/auth/login', async (req, res) => {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    if (!user.emailVerified) {
-      return res.status(403).json({
-        message: 'Please verify your email before logging in.',
-        code: 'EMAIL_NOT_VERIFIED',
-      });
-    }
-
     return res.json(await buildAuthResponse(user));
   } catch {
     return res.status(500).json({ message: 'Login failed' });
@@ -190,9 +276,10 @@ router.post('/auth/signup', async (req, res) => {
 
     const { hash, salt } = hashPassword(parsed.data.password);
     const token = generateVerificationToken();
-    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
-    await prisma.user.create({
+    const user = await prisma.user.create({
       data: {
         email,
         name,
@@ -203,6 +290,9 @@ router.post('/auth/signup', async (req, res) => {
         emailVerified: false,
         emailVerificationToken: token,
         emailVerificationExpiresAt: expiresAt,
+        emailVerificationLastSentAt: now,
+        emailVerificationSendCount: 1,
+        emailVerificationWindowStart: now,
       },
     });
 
@@ -213,7 +303,7 @@ router.post('/auth/signup', async (req, res) => {
       // Account is created — do not fail the request over email delivery
     }
 
-    return res.status(201).json({ message: 'Account created. Please check your email to verify your account.' });
+    return res.status(201).json(await buildAuthResponse(user));
   } catch {
     return res.status(500).json({ message: 'Registration failed' });
   }
@@ -259,23 +349,43 @@ router.get('/auth/verify-email', async (req, res) => {
   }
 });
 
-// POST /auth/resend-verification
-router.post('/auth/resend-verification', async (req, res) => {
+// POST /auth/resend-verification  (authenticated)
+router.post('/auth/resend-verification', authenticate, async (req: AuthenticatedRequest, res) => {
   try {
-    const parsed = resendVerificationSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
-    }
+    if (!req.user) return res.status(401).json({ message: 'Unauthorized' });
 
-    const email = parsed.data.email.trim().toLowerCase();
     const user = await prisma.user.findUnique({
-      where: { email },
-      select: { id: true, name: true, emailVerified: true },
+      where: { id: req.user.id },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        emailVerified: true,
+        emailVerificationLastSentAt: true,
+        emailVerificationSendCount: true,
+        emailVerificationWindowStart: true,
+      },
     });
 
-    // Always return 200 to avoid email enumeration
-    if (!user || user.emailVerified) {
-      return res.json({ message: 'If that email exists and is unverified, a new link has been sent.' });
+    if (!user) return res.status(401).json({ message: 'Unauthorized' });
+    if (user.emailVerified) {
+      return res.status(409).json({ message: 'Email already verified', code: 'ALREADY_VERIFIED' });
+    }
+
+    const state: ResendRateState = {
+      lastSentAt: user.emailVerificationLastSentAt,
+      sendCount: user.emailVerificationSendCount,
+      windowStart: user.emailVerificationWindowStart,
+    };
+    const check = evaluateResendRate(state);
+
+    if (!check.allowed) {
+      return res.status(429).json({
+        message: 'Too many requests. Please try again later.',
+        code: 'RESEND_RATE_LIMITED',
+        retryAfterSeconds: check.retryAfterSeconds,
+        remainingAttempts: check.remainingAttempts,
+      });
     }
 
     const token = generateVerificationToken();
@@ -283,14 +393,53 @@ router.post('/auth/resend-verification', async (req, res) => {
 
     await prisma.user.update({
       where: { id: user.id },
-      data: { emailVerificationToken: token, emailVerificationExpiresAt: expiresAt },
+      data: {
+        emailVerificationToken: token,
+        emailVerificationExpiresAt: expiresAt,
+        emailVerificationLastSentAt: check.nextWindowState.lastSentAt,
+        emailVerificationSendCount: check.nextWindowState.sendCount,
+        emailVerificationWindowStart: check.nextWindowState.windowStart,
+      },
     });
 
-    await sendVerificationEmail(email, user.name, token);
+    try {
+      await sendVerificationEmail(user.email, user.name, token);
+    } catch (emailErr) {
+      console.error('[email] Failed to send verification email:', emailErr);
+      return res.status(502).json({ message: 'Email delivery failed. Please try again shortly.' });
+    }
 
-    return res.json({ message: 'If that email exists and is unverified, a new link has been sent.' });
+    const status = computeResendStatus(check.nextWindowState);
+    return res.json({ message: 'Verification email sent.', ...status });
   } catch {
     return res.status(500).json({ message: 'Failed to resend verification email' });
+  }
+});
+
+// GET /auth/verification-status  (authenticated)
+router.get('/auth/verification-status', authenticate, async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.user) return res.status(401).json({ message: 'Unauthorized' });
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: {
+        emailVerified: true,
+        emailVerificationLastSentAt: true,
+        emailVerificationSendCount: true,
+        emailVerificationWindowStart: true,
+      },
+    });
+    if (!user) return res.status(401).json({ message: 'Unauthorized' });
+
+    const state: ResendRateState = {
+      lastSentAt: user.emailVerificationLastSentAt,
+      sendCount: user.emailVerificationSendCount,
+      windowStart: user.emailVerificationWindowStart,
+    };
+    return res.json({ emailVerified: user.emailVerified, ...computeResendStatus(state) });
+  } catch {
+    return res.status(500).json({ message: 'Failed to fetch verification status' });
   }
 });
 
@@ -354,7 +503,7 @@ router.post('/auth/refresh', async (req, res) => {
 
     const user = await prisma.user.findUnique({
       where: { id: stored.userId },
-      select: { id: true, email: true, name: true, role: true },
+      select: { id: true, email: true, name: true, role: true, emailVerified: true },
     });
 
     if (!user) {
@@ -407,13 +556,20 @@ router.post('/auth/logout', authenticate, async (req: AuthenticatedRequest, res)
 });
 
 // GET /auth/profile
-router.get('/auth/profile', authenticate, (req: AuthenticatedRequest, res) => {
+router.get('/auth/profile', authenticate, async (req: AuthenticatedRequest, res) => {
   if (!req.user) {
     return res.status(401).json({ message: 'Unauthorized' });
   }
-  return res.json({
-    user: { id: req.user.id, email: req.user.email, name: req.user.name, role: req.user.role },
-  });
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { id: true, email: true, name: true, role: true, emailVerified: true },
+    });
+    if (!user) return res.status(401).json({ message: 'Unauthorized' });
+    return res.json({ user });
+  } catch {
+    return res.status(500).json({ message: 'Failed to load profile' });
+  }
 });
 
 export { router as authRouter };
