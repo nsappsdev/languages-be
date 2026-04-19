@@ -42,12 +42,14 @@ jobs:
           GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
           GHCR_PAT: ${{ secrets.GHCR_PAT }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         with:
           host: ${{ secrets.DO_HOST }}
           username: ${{ secrets.DO_SSH_USER }}
           key: ${{ secrets.DO_SSH_KEY }}
           port: ${{ secrets.DO_SSH_PORT || '22' }}
-          envs: GHCR_USERNAME,GHCR_PAT,SMTP_PASS
+          envs: GHCR_USERNAME,GHCR_PAT,SMTP_PASS,SMTP_FROM,APP_BASE_URL
           script: |
             set -e
             cd /opt/nsapp
@@ -57,16 +59,26 @@ jobs:
               exit 1
             fi
 
-            # Inject only the sensitive API key — everything else is already in .env
-            if [ -n "$SMTP_PASS" ]; then
-              if grep -q "^SMTP_PASS=" .env 2>/dev/null; then
-                sed -i "s|^SMTP_PASS=.*|SMTP_PASS=${SMTP_PASS}|" .env
-              else
-                echo "SMTP_PASS=${SMTP_PASS}" >> .env
+            # Upsert a KEY=VALUE line in .env
+            upsert_env() {
+              local key="$1"
+              local value="$2"
+              if [ -z "$value" ]; then
+                return 0
               fi
-            fi
+              if grep -q "^${key}=" .env 2>/dev/null; then
+                # Use a delimiter unlikely to appear in values
+                sed -i "s|^${key}=.*|${key}=${value}|" .env
+              else
+                echo "${key}=${value}" >> .env
+              fi
+            }
+
+            upsert_env SMTP_PASS "$SMTP_PASS"
+            upsert_env SMTP_FROM "$SMTP_FROM"
+            upsert_env APP_BASE_URL "$APP_BASE_URL"
 
             echo "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
             docker compose pull languages-api
-            docker compose up -d --remove-orphans languages-api
+            docker compose up -d --force-recreate --remove-orphans languages-api
             docker image prune -f
