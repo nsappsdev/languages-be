@@ -12,6 +12,18 @@ const statusSchema = z.object({
 const vocabularyPackSchema = z.object({
   items: z.array(z.string().trim().min(1)).min(1).max(50),
 });
+
+const bulkStatusSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        entryId: z.string().min(1),
+        status: z.enum(['NEW', 'REVIEWING', 'MASTERED']),
+      }),
+    )
+    .min(1)
+    .max(100),
+});
 const learnerEntryRoutePath = '/me/vocabulary/:entryId([A-Za-z0-9_-]{20,})';
 
 router.get('/me/vocabulary', authenticate, async (req: AuthenticatedRequest, res) => {
@@ -134,6 +146,48 @@ router.post('/me/vocabulary/pack', authenticate, async (req: AuthenticatedReques
     resolved: orderedVocabulary.length,
     received: parsed.data.items.length,
   });
+});
+
+router.post('/me/vocabulary/bulk-status', authenticate, async (req: AuthenticatedRequest, res) => {
+  if (!req.user) return res.status(401).json({ message: 'Unauthorized' });
+
+  const parsed = bulkStatusSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
+  }
+
+  const dedupedByEntryId = new Map<string, 'NEW' | 'REVIEWING' | 'MASTERED'>();
+  for (const item of parsed.data.items) {
+    dedupedByEntryId.set(item.entryId, item.status);
+  }
+
+  const entryIds = Array.from(dedupedByEntryId.keys());
+
+  try {
+    await prisma.$transaction(
+      entryIds.map((entryId) =>
+        prisma.learnerVocabulary.updateMany({
+          where: { userId: req.user!.id, entryId },
+          data: { status: dedupedByEntryId.get(entryId)! },
+        }),
+      ),
+    );
+
+    const updated = await prisma.learnerVocabulary.findMany({
+      where: { userId: req.user.id, entryId: { in: entryIds } },
+      include: { entry: { include: { translations: true } } },
+    });
+
+    return res.json({
+      vocabulary: updated,
+      received: parsed.data.items.length,
+      applied: updated.length,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      message: err instanceof Error ? err.message : 'Failed to apply bulk vocabulary status',
+    });
+  }
 });
 
 router.post(learnerEntryRoutePath, authenticate, async (req: AuthenticatedRequest, res) => {

@@ -9,8 +9,10 @@ coverage
 *.tmp
 .DS_Store
 .env
-.env.example
 .env.local
 .env.*.local
 docs/
 .idea
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
