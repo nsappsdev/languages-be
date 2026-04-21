@@ -43,6 +43,10 @@ const googleSignInSchema = z.object({
   idToken: z.string().min(1),
 });
 
+const updateProfileSchema = z.object({
+  name: z.string().trim().min(2).max(80),
+});
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
 const DEFAULT_REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -569,6 +573,28 @@ router.get('/auth/profile', authenticate, async (req: AuthenticatedRequest, res)
     return res.json({ user });
   } catch {
     return res.status(500).json({ message: 'Failed to load profile' });
+  }
+});
+
+// PATCH /auth/profile
+router.patch('/auth/profile', authenticate, async (req: AuthenticatedRequest, res) => {
+  if (!req.user) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  try {
+    const parsed = updateProfileSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
+    }
+
+    const user = await prisma.user.update({
+      where: { id: req.user.id },
+      data: { name: parsed.data.name },
+      select: { id: true, email: true, name: true, role: true, emailVerified: true },
+    });
+    return res.json({ user });
+  } catch {
+    return res.status(500).json({ message: 'Failed to update profile' });
   }
 });
 
