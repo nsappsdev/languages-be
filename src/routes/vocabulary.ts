@@ -21,7 +21,10 @@ const translationSchema = z.object({
 
 const vocabularyQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
-  pageSize: z.coerce.number().int().min(1).max(10).default(10),
+  pageSize: z.coerce.number().int().min(1).max(100).default(25),
+  q: z.string().trim().max(100).optional(),
+  kind: z.enum(['WORD', 'PHRASE', 'SENTENCE']).optional(),
+  tag: z.string().trim().max(50).optional(),
 });
 
 const vocabularyLookupSchema = z.object({
@@ -34,15 +37,35 @@ router.get('/vocabulary', authenticate, async (req: AuthenticatedRequest, res) =
     return res.status(400).json({ message: 'Invalid query', issues: parsedQuery.error.flatten() });
   }
 
-  const { page, pageSize } = parsedQuery.data;
+  const { page, pageSize, q, kind, tag } = parsedQuery.data;
+
+  const conditions: any[] = [];
+  if (q && q.length > 0) {
+    conditions.push({
+      OR: [
+        { englishText: { contains: q, mode: 'insensitive' } },
+        { notes: { contains: q, mode: 'insensitive' } },
+        { translations: { some: { translation: { contains: q, mode: 'insensitive' } } } },
+      ],
+    });
+  }
+  if (kind) {
+    conditions.push({ kind });
+  }
+  if (tag && tag.length > 0) {
+    conditions.push({ tags: { has: tag } });
+  }
+  const where = conditions.length > 0 ? { AND: conditions } : {};
+
   const [entries, total] = await Promise.all([
     prisma.vocabularyEntry.findMany({
+      where,
       orderBy: { englishText: 'asc' },
       skip: (page - 1) * pageSize,
       take: pageSize,
       include: { translations: true },
     }),
-    prisma.vocabularyEntry.count(),
+    prisma.vocabularyEntry.count({ where }),
   ]);
 
   return res.json({
