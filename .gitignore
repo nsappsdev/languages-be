@@ -16,3 +16,9 @@ docs/
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.json
+
+# typescript incremental build cache
+*.tsbuildinfo
+
+# certs / keys
+*.pem

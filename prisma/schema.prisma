@@ -92,7 +92,7 @@ model VocabularyTranslation {
   usageExample String?
   createdAt    DateTime        @default(now())
   updatedAt    DateTime        @updatedAt
-  entry        VocabularyEntry @relation(fields: [entryId], references: [id])
+  entry        VocabularyEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
 }
 
 model LearnerVocabulary {
@@ -103,7 +103,7 @@ model LearnerVocabulary {
   addedAt   DateTime          @default(now())
   updatedAt DateTime          @updatedAt
   user      User              @relation(fields: [userId], references: [id])
-  entry     VocabularyEntry   @relation(fields: [entryId], references: [id])
+  entry     VocabularyEntry   @relation(fields: [entryId], references: [id], onDelete: Cascade)
 
   @@unique([userId, entryId])
 }
@@ -125,7 +125,7 @@ model LessonDictionaryEntry {
   lessonId        String
   lesson          Lesson                         @relation(fields: [lessonId], references: [id])
   entryId         String
-  entry           VocabularyEntry                @relation(fields: [entryId], references: [id])
+  entry           VocabularyEntry                @relation(fields: [entryId], references: [id], onDelete: Cascade)
   order           Int
   sourceItemId    String?
   sourceItem      LessonItem?                    @relation("LessonItemDictionarySource", fields: [sourceItemId], references: [id])
@@ -147,7 +147,7 @@ model LearnerLessonDictionaryEntry {
   lessonId          String
   lesson            Lesson                        @relation(fields: [lessonId], references: [id])
   entryId           String
-  entry             VocabularyEntry               @relation(fields: [entryId], references: [id])
+  entry             VocabularyEntry               @relation(fields: [entryId], references: [id], onDelete: Cascade)
   dictionaryEntryId String?
   dictionaryEntry   LessonDictionaryEntry?        @relation(fields: [dictionaryEntryId], references: [id])
   status            LearnerLessonDictionaryStatus @default(NEW)
