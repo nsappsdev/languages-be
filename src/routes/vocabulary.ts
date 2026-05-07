@@ -43,6 +43,8 @@ const vocabularyQuerySchema = z.object({
   q: z.string().trim().max(100).optional(),
   kind: z.enum(['WORD', 'PHRASE', 'SENTENCE']).optional(),
   tag: z.string().trim().max(50).optional(),
+  translated: z.enum(['translated', 'untranslated']).optional(),
+  lang: z.string().trim().min(2).max(10).optional(),
 });
 
 const vocabularyLookupSchema = z.object({
@@ -73,7 +75,7 @@ router.get('/vocabulary', authenticate, async (req: AuthenticatedRequest, res) =
     return res.status(400).json({ message: 'Invalid query', issues: parsedQuery.error.flatten() });
   }
 
-  const { page, pageSize, q, kind, tag } = parsedQuery.data;
+  const { page, pageSize, q, kind, tag, translated, lang } = parsedQuery.data;
 
   const conditions: any[] = [];
   if (q && q.length > 0) {
@@ -90,6 +92,16 @@ router.get('/vocabulary', authenticate, async (req: AuthenticatedRequest, res) =
   }
   if (tag && tag.length > 0) {
     conditions.push({ tags: { has: tag } });
+  }
+  if (translated) {
+    const translationFilter = lang
+      ? { languageCode: { equals: lang, mode: 'insensitive' as const } }
+      : {};
+    conditions.push(
+      translated === 'translated'
+        ? { translations: { some: translationFilter } }
+        : { translations: { none: translationFilter } },
+    );
   }
   const where = conditions.length > 0 ? { AND: conditions } : {};
 

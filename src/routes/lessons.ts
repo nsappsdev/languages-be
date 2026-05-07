@@ -1,8 +1,12 @@
 import { Response, Router } from 'express';
+import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { authenticate, AuthenticatedRequest } from '../middleware/authenticate';
 import { prisma } from '../lib/prisma';
-import { ensureVocabularyEntriesForLessonTexts } from '../lib/vocabularyIngestion';
+import {
+  buildLessonVocabularyCoverage,
+  ensureVocabularyEntriesForLessonTexts,
+} from '../lib/vocabularyIngestion';
 
 const router = Router();
 
@@ -92,7 +96,20 @@ router.get('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res) 
   if (!lesson) {
     return res.status(404).json({ message: 'Lesson not found' });
   }
-  return res.json({ lesson });
+
+  const lessonVocabulary = await buildLessonVocabularyCoverage(
+    prisma,
+    lesson.items.map((item) => item.text),
+    { createdById: req.user?.id, ensureMissing: true },
+  );
+
+  return res.json({
+    lesson: {
+      ...lesson,
+      dictionary: lessonVocabulary.dictionary,
+      dictionaryCoverage: lessonVocabulary.coverage,
+    },
+  });
 });
 
 router.post('/lessons', authenticate, async (req: AuthenticatedRequest, res) => {
@@ -204,16 +221,55 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
     },
   });
 
-  return res.json({ lesson: updated });
+  if (!updated) {
+    return res.status(404).json({ message: 'Lesson not found' });
+  }
+
+  const lessonVocabulary = await buildLessonVocabularyCoverage(
+    prisma,
+    updated.items.map((item) => item.text),
+    { createdById: req.user?.id, ensureMissing: true },
+  );
+
+  return res.json({
+    lesson: {
+      ...updated,
+      dictionary: lessonVocabulary.dictionary,
+      dictionaryCoverage: lessonVocabulary.coverage,
+    },
+  });
 });
 
 router.delete('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res) => {
   if (!requireAdmin(req, res)) return;
   try {
-    await prisma.lesson.delete({ where: { id: req.params.id } });
+    const existing = await prisma.lesson.findUnique({
+      where: { id: req.params.id },
+      select: { id: true },
+    });
+    if (!existing) {
+      return res.status(404).json({ message: 'Lesson not found' });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.learnerLessonDictionaryEntry.deleteMany({
+        where: { lessonId: req.params.id },
+      });
+      await tx.lessonDictionaryEntry.deleteMany({
+        where: { lessonId: req.params.id },
+      });
+      await tx.lessonItem.deleteMany({
+        where: { lessonId: req.params.id },
+      });
+      await tx.lesson.delete({ where: { id: req.params.id } });
+    });
     return res.status(204).send();
-  } catch {
-    return res.status(404).json({ message: 'Lesson not found' });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+      return res.status(404).json({ message: 'Lesson not found' });
+    }
+    console.error('Failed to delete lesson', error);
+    return res.status(500).json({ message: 'Failed to delete lesson' });
   }
 });
 
