@@ -799,7 +799,32 @@ async function main() {
   await seedAutoVocabularyTranslations();
   await prisma.appSettings.upsert({
     where: { id: 'global' },
-    create: { id: 'global' },
+    create: {
+      id: 'global',
+      readingModes: [
+        { id: 'introduction', enabled: true, displayName: 'Introduction', order: 0 },
+        {
+          id: 'teaching',
+          enabled: true,
+          displayName: 'Teaching',
+          order: 1,
+          unknownWordRepetitions: 5,
+        },
+        {
+          id: 'deep_learning',
+          enabled: true,
+          displayName: 'Deep Learning',
+          order: 2,
+          unknownWordRepetitions: 5,
+          repeatSentenceWhenUnknownCountAtLeast: 2,
+          sentenceRepetitions: 2,
+        },
+      ],
+      translationFontMinSize: 8,
+      translationFontMaxSize: 15,
+      translationLetterSpacingMin: -0.2,
+      translationLetterSpacingMax: 0.8,
+    },
     update: {},
   });
   console.log('App settings seeded.');

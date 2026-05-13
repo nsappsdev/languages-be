@@ -8,22 +8,22 @@ datasource db {
 }
 
 model User {
-  id                          String    @id @default(cuid())
-  email                       String    @unique
-  name                        String
-  role                        String    @default("admin")
-  passwordHash                String?
-  salt                        String?
-  authProvider                String    @default("email")
-  googleId                    String?   @unique
-  emailVerified               Boolean   @default(false)
-  emailVerificationToken      String?   @unique
-  emailVerificationExpiresAt  DateTime?
-  emailVerificationLastSentAt DateTime?
-  emailVerificationSendCount  Int       @default(0)
+  id                           String    @id @default(cuid())
+  email                        String    @unique
+  name                         String
+  role                         String    @default("admin")
+  passwordHash                 String?
+  salt                         String?
+  authProvider                 String    @default("email")
+  googleId                     String?   @unique
+  emailVerified                Boolean   @default(false)
+  emailVerificationToken       String?   @unique
+  emailVerificationExpiresAt   DateTime?
+  emailVerificationLastSentAt  DateTime?
+  emailVerificationSendCount   Int       @default(0)
   emailVerificationWindowStart DateTime?
-  createdAt                   DateTime  @default(now())
-  updatedAt                   DateTime  @updatedAt
+  createdAt                    DateTime  @default(now())
+  updatedAt                    DateTime  @updatedAt
 
   lessons                  Lesson[]                       @relation("LessonAuthor")
   createdVocabularyEntries VocabularyEntry[]              @relation("VocabularyCreator")
@@ -56,6 +56,8 @@ model LessonItem {
   text              String
   audioUrl          String
   segments          Json
+  wordTimings       Json                    @default("[]")
+  sentenceTimings   Json                    @default("[]")
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt
   dictionaryEntries LessonDictionaryEntry[] @relation("LessonItemDictionarySource")
@@ -192,14 +194,18 @@ enum ProgressEventType {
 }
 
 model AppSettings {
-  id                     String   @id @default("global")
-  unknownWordRepetitions Int      @default(2)
-  mainTextFontFamily     String   @default("System")
-  mainTextFontSize       Int      @default(18)
-  translationFontFamily  String   @default("System")
-  translationFontSize    Int      @default(12)
-  createdAt              DateTime @default(now())
-  updatedAt              DateTime @updatedAt
+  id                          String   @id @default("global")
+  readingModes                Json     @default("[{\"id\":\"introduction\",\"enabled\":true,\"displayName\":\"Introduction\",\"order\":0},{\"id\":\"teaching\",\"enabled\":true,\"displayName\":\"Teaching\",\"order\":1,\"unknownWordRepetitions\":5},{\"id\":\"deep_learning\",\"enabled\":true,\"displayName\":\"Deep Learning\",\"order\":2,\"unknownWordRepetitions\":5,\"repeatSentenceWhenUnknownCountAtLeast\":2,\"sentenceRepetitions\":2}]")
+  mainTextFontFamily          String   @default("System")
+  mainTextFontSize            Int      @default(18)
+  translationFontFamily       String   @default("System")
+  translationFontSize         Int      @default(12)
+  translationFontMinSize      Int      @default(8)
+  translationFontMaxSize      Int      @default(15)
+  translationLetterSpacingMin Float    @default(-0.2)
+  translationLetterSpacingMax Float    @default(0.8)
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
 }
 
 model AuthRefreshToken {

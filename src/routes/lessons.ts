@@ -5,6 +5,7 @@ import { authenticate, AuthenticatedRequest } from '../middleware/authenticate';
 import { prisma } from '../lib/prisma';
 import {
   buildLessonVocabularyCoverage,
+  canonicalizeVocabularyText,
   ensureVocabularyEntriesForLessonTexts,
 } from '../lib/vocabularyIngestion';
 
@@ -35,13 +36,63 @@ const segmentSchema = z
     path: ['endMs'],
   });
 
-const itemBaseSchema = z.object({
+const wordTimingSchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    text: z.string().trim().min(1),
+    normalizedText: z.string().trim().min(1).optional(),
+    startMs: z.number().int().min(0),
+    endMs: z.number().int().min(1),
+    order: z.number().int().nonnegative().optional(),
+  })
+  .refine((mark) => mark.endMs > mark.startMs, {
+    message: 'Word timing endMs must be greater than startMs',
+    path: ['endMs'],
+  });
+
+const sentenceTimingSchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    text: z.string().trim().min(1),
+    startMs: z.number().int().min(0),
+    endMs: z.number().int().min(1),
+    wordMarkIds: z.array(z.string().min(1)).default([]),
+    order: z.number().int().nonnegative().optional(),
+  })
+  .refine((mark) => mark.endMs > mark.startMs, {
+    message: 'Sentence timing endMs must be greater than startMs',
+    path: ['endMs'],
+  });
+
+const itemBaseObjectSchema = z.object({
   id: z.string().min(1).optional(),
   text: z.string().min(1),
   audioUrl: audioUrlSchema,
   order: z.number().int().nonnegative().optional(),
   segments: z.array(segmentSchema).min(1),
+  wordTimings: z.array(wordTimingSchema).default([]),
+  sentenceTimings: z.array(sentenceTimingSchema).default([]),
 });
+
+const refineLessonItemTiming = (item: z.infer<typeof itemBaseObjectSchema>, ctx: z.RefinementCtx) => {
+    validateTimingMarks('wordTimings', item.wordTimings, item.segments, ctx);
+    validateTimingMarks('sentenceTimings', item.sentenceTimings, item.segments, ctx);
+
+    const wordTimingIds = new Set(item.wordTimings.map((mark) => mark.id).filter(Boolean));
+    item.sentenceTimings.forEach((sentence, sentenceIndex) => {
+      sentence.wordMarkIds.forEach((wordMarkId, wordIndex) => {
+        if (!wordTimingIds.has(wordMarkId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['sentenceTimings', sentenceIndex, 'wordMarkIds', wordIndex],
+            message: `Unknown word timing id: ${wordMarkId}`,
+          });
+        }
+      });
+    });
+  };
+
+const itemBaseSchema = itemBaseObjectSchema.superRefine(refineLessonItemTiming);
 
 const createLessonSchema = lessonBaseSchema.extend({
   items: z.array(itemBaseSchema).optional(),
@@ -51,7 +102,65 @@ const updateLessonSchema = lessonBaseSchema.partial().extend({
   items: z.array(itemBaseSchema).optional(),
 });
 
-const createItemSchema = itemBaseSchema.omit({ id: true });
+const createItemSchema = itemBaseObjectSchema.omit({ id: true }).superRefine(refineLessonItemTiming);
+
+function validateTimingMarks(
+  fieldName: 'wordTimings' | 'sentenceTimings',
+  marks: Array<{ startMs: number; endMs: number; order?: number }>,
+  segments: Array<{ endMs: number }>,
+  ctx: z.RefinementCtx,
+) {
+  let previousOrder = -1;
+  const timelineEndMs = segments.length ? Math.max(...segments.map((segment) => segment.endMs)) : null;
+
+  marks.forEach((mark, index) => {
+    const order = mark.order ?? index;
+    if (order < previousOrder) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [fieldName, index, 'order'],
+        message: `${fieldName} must be sorted by order`,
+      });
+    }
+    previousOrder = order;
+
+    if (timelineEndMs !== null && mark.endMs > timelineEndMs) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [fieldName, index, 'endMs'],
+        message: `${fieldName} must be contained within the item audio timeline`,
+      });
+    }
+  });
+}
+
+type ParsedLessonItem = z.infer<typeof itemBaseSchema>;
+
+function normalizeLessonItemPayload(item: ParsedLessonItem, index: number) {
+  return {
+    id: item.id,
+    order: item.order ?? index,
+    text: item.text,
+    audioUrl: item.audioUrl,
+    segments: item.segments,
+    wordTimings: item.wordTimings.map((mark, markIndex) => ({
+      id: mark.id ?? `word-${markIndex + 1}`,
+      text: mark.text,
+      normalizedText: mark.normalizedText ?? canonicalizeVocabularyText(mark.text),
+      startMs: mark.startMs,
+      endMs: mark.endMs,
+      order: mark.order ?? markIndex,
+    })),
+    sentenceTimings: item.sentenceTimings.map((mark, markIndex) => ({
+      id: mark.id ?? `sentence-${markIndex + 1}`,
+      text: mark.text,
+      startMs: mark.startMs,
+      endMs: mark.endMs,
+      wordMarkIds: mark.wordMarkIds,
+      order: mark.order ?? markIndex,
+    })),
+  };
+}
 
 const requireAdmin = (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
@@ -120,6 +229,7 @@ router.post('/lessons', authenticate, async (req: AuthenticatedRequest, res) => 
   }
 
   const { title, description, status, items } = parsed.data;
+  const normalizedItems = items?.map(normalizeLessonItemPayload);
   const created = await prisma.lesson.create({
     data: {
       title,
@@ -127,14 +237,16 @@ router.post('/lessons', authenticate, async (req: AuthenticatedRequest, res) => 
       status: status ?? 'DRAFT',
       publishedAt: status === 'PUBLISHED' ? new Date() : null,
       authorId: req.user!.id,
-      items: items
+      items: normalizedItems
         ? {
-            create: items.map((item, index) => ({
+            create: normalizedItems.map((item) => ({
               id: item.id,
-              order: item.order ?? index,
+              order: item.order,
               text: item.text,
               audioUrl: item.audioUrl,
               segments: item.segments,
+              wordTimings: item.wordTimings,
+              sentenceTimings: item.sentenceTimings,
             })),
           }
         : undefined,
@@ -144,10 +256,10 @@ router.post('/lessons', authenticate, async (req: AuthenticatedRequest, res) => 
     },
   });
 
-  if (items?.length) {
+  if (normalizedItems?.length) {
     await ensureVocabularyEntriesForLessonTexts(
       prisma,
-      items.map((item) => item.text),
+      normalizedItems.map((item) => item.text),
       req.user?.id,
     );
   }
@@ -171,7 +283,8 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
   }
 
   const { title, description, status, items } = parsed.data;
-  const itemTextsForVocabulary = items?.map((item) => item.text) ?? null;
+  const normalizedItems = items?.map(normalizeLessonItemPayload);
+  const itemTextsForVocabulary = normalizedItems?.map((item) => item.text) ?? null;
 
   await prisma.$transaction(async (tx) => {
     await tx.lesson.update({
@@ -189,17 +302,19 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
       },
     });
 
-    if (items) {
+    if (normalizedItems) {
       await tx.lessonItem.deleteMany({ where: { lessonId: req.params.id } });
-      if (items.length) {
+      if (normalizedItems.length) {
         await tx.lessonItem.createMany({
-          data: items.map((item, index) => ({
+          data: normalizedItems.map((item) => ({
             id: item.id,
             lessonId: req.params.id,
-            order: item.order ?? index,
+            order: item.order,
             text: item.text,
             audioUrl: item.audioUrl,
             segments: item.segments,
+            wordTimings: item.wordTimings,
+            sentenceTimings: item.sentenceTimings,
           })),
         });
       }
@@ -286,17 +401,20 @@ router.post('/lessons/:lessonId/items', authenticate, async (req: AuthenticatedR
   }
 
   const itemCount = await prisma.lessonItem.count({ where: { lessonId: lesson.id } });
+  const normalizedItem = normalizeLessonItemPayload(parsed.data, itemCount);
   const created = await prisma.lessonItem.create({
     data: {
       lessonId: lesson.id,
-      text: parsed.data.text,
-      audioUrl: parsed.data.audioUrl,
-      order: parsed.data.order ?? itemCount,
-      segments: parsed.data.segments,
+      text: normalizedItem.text,
+      audioUrl: normalizedItem.audioUrl,
+      order: normalizedItem.order,
+      segments: normalizedItem.segments,
+      wordTimings: normalizedItem.wordTimings,
+      sentenceTimings: normalizedItem.sentenceTimings,
     },
   });
 
-  await ensureVocabularyEntriesForLessonTexts(prisma, [parsed.data.text], req.user?.id);
+  await ensureVocabularyEntriesForLessonTexts(prisma, [normalizedItem.text], req.user?.id);
 
   return res.status(201).json({ item: created });
 });
