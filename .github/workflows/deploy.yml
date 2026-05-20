@@ -44,6 +44,7 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+          OPENAI_API_KEY: ${OPENAI_API_KEY}
         with:
           host: ${{ secrets.DO_HOST }}
           username: ${{ secrets.DO_SSH_USER }}
