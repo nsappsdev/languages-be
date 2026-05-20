@@ -3,6 +3,9 @@ import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { authenticate, AuthenticatedRequest } from '../middleware/authenticate';
 import { prisma } from '../lib/prisma';
+import { resolveStoredAudioPath } from '../lib/audioStorage';
+import { generateLessonTimingsFromTranscript } from '../lib/lessonTimingAlignment';
+import { transcribeAudioWithWordTimestamps } from '../lib/openaiTranscription';
 import {
   buildLessonVocabularyCoverage,
   canonicalizeVocabularyText,
@@ -103,6 +106,10 @@ const updateLessonSchema = lessonBaseSchema.partial().extend({
 });
 
 const createItemSchema = itemBaseObjectSchema.omit({ id: true }).superRefine(refineLessonItemTiming);
+
+const generateTimingsSchema = z.object({
+  text: z.string().trim().min(1).optional(),
+});
 
 function validateTimingMarks(
   fieldName: 'wordTimings' | 'sentenceTimings',
@@ -354,6 +361,65 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
     },
   });
 });
+
+router.post(
+  '/lessons/:lessonId/items/:itemId/transcribe-timings',
+  authenticate,
+  async (req: AuthenticatedRequest, res) => {
+    if (!requireAdmin(req, res)) return;
+
+    const parsed = generateTimingsSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
+    }
+
+    const item = await prisma.lessonItem.findFirst({
+      where: {
+        id: req.params.itemId,
+        lessonId: req.params.lessonId,
+      },
+    });
+    if (!item) {
+      return res.status(404).json({ message: 'Lesson item not found' });
+    }
+    if (!item.audioUrl) {
+      return res.status(400).json({ message: 'Upload audio before generating timings.' });
+    }
+
+    const audioPath = resolveStoredAudioPath(item.audioUrl);
+    if (!audioPath) {
+      return res.status(400).json({
+        message: 'AI timing generation currently supports uploaded lesson audio files only.',
+      });
+    }
+
+    try {
+      const lessonText = parsed.data.text ?? item.text;
+      const transcription = await transcribeAudioWithWordTimestamps({
+        audioPath,
+        prompt: lessonText,
+      });
+      const timings = generateLessonTimingsFromTranscript({
+        lessonText,
+        transcriptText: transcription.text,
+        transcriptWords: transcription.words,
+      });
+
+      if (!timings.segments.length || !timings.wordTimings.length) {
+        return res.status(422).json({
+          message: 'Could not align the audio transcript to this lesson text.',
+          timings,
+        });
+      }
+
+      return res.json({ timings });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to generate timings';
+      const status = message.includes('OPENAI_API_KEY') ? 503 : 502;
+      return res.status(status).json({ message });
+    }
+  },
+);
 
 router.delete('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res) => {
   if (!requireAdmin(req, res)) return;

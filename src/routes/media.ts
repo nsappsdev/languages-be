@@ -5,10 +5,10 @@ import multer from 'multer';
 import { z } from 'zod';
 import { authenticate, AuthenticatedRequest } from '../middleware/authenticate';
 import { prisma } from '../lib/prisma';
+import { AUDIO_UPLOAD_DIR, resolveStoredAudioPath } from '../lib/audioStorage';
 
 const router = Router();
 
-const AUDIO_UPLOAD_DIR = path.resolve(process.cwd(), 'public', 'audio');
 const MAX_AUDIO_UPLOAD_BYTES = 25 * 1024 * 1024;
 const ALLOWED_EXTENSIONS = new Set([
   '.mp3',
@@ -74,25 +74,6 @@ function resolveFileExtension(originalName: string, mimeType: string) {
   }
 
   return null;
-}
-
-function resolveStoredAudioPath(audioUrl: string) {
-  const mediaPrefix = '/media/audio/';
-  if (!audioUrl.startsWith(mediaPrefix)) {
-    return null;
-  }
-
-  const encodedFileName = audioUrl.slice(mediaPrefix.length);
-  if (!encodedFileName) {
-    return null;
-  }
-
-  const decodedFileName = decodeURIComponent(encodedFileName);
-  if (decodedFileName !== path.basename(decodedFileName)) {
-    return null;
-  }
-
-  return path.join(AUDIO_UPLOAD_DIR, decodedFileName);
 }
 
 const storage = multer.diskStorage({
