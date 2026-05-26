@@ -7,9 +7,8 @@ import { resolveStoredAudioPath } from '../lib/audioStorage';
 import { generateLessonTimingsFromTranscript } from '../lib/lessonTimingAlignment';
 import { transcribeAudioWithWordTimestamps } from '../lib/openaiTranscription';
 import {
-  buildLessonVocabularyCoverage,
+  buildLessonVocabularyPayload,
   canonicalizeVocabularyText,
-  ensureVocabularyEntriesForLessonTexts,
 } from '../lib/vocabularyIngestion';
 
 const router = Router();
@@ -213,17 +212,19 @@ router.get('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res) 
     return res.status(404).json({ message: 'Lesson not found' });
   }
 
-  const lessonVocabulary = await buildLessonVocabularyCoverage(
+  const lessonVocabulary = await buildLessonVocabularyPayload(
     prisma,
+    lesson.id,
     lesson.items.map((item) => item.text),
-    { createdById: req.user?.id, ensureMissing: true },
   );
 
   return res.json({
     lesson: {
       ...lesson,
-      dictionary: lessonVocabulary.dictionary,
+      dictionary: lessonVocabulary.vocabulary,
       dictionaryCoverage: lessonVocabulary.coverage,
+      vocabulary: lessonVocabulary.vocabulary,
+      vocabularyCoverage: lessonVocabulary.coverage,
     },
   });
 });
@@ -263,15 +264,21 @@ router.post('/lessons', authenticate, async (req: AuthenticatedRequest, res) => 
     },
   });
 
-  if (normalizedItems?.length) {
-    await ensureVocabularyEntriesForLessonTexts(
-      prisma,
-      normalizedItems.map((item) => item.text),
-      req.user?.id,
-    );
-  }
+  const lessonVocabulary = await buildLessonVocabularyPayload(
+    prisma,
+    created.id,
+    created.items.map((item) => item.text),
+  );
 
-  return res.status(201).json({ lesson: created });
+  return res.status(201).json({
+    lesson: {
+      ...created,
+      dictionary: lessonVocabulary.vocabulary,
+      dictionaryCoverage: lessonVocabulary.coverage,
+      vocabulary: lessonVocabulary.vocabulary,
+      vocabularyCoverage: lessonVocabulary.coverage,
+    },
+  });
 });
 
 router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res) => {
@@ -291,8 +298,6 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
 
   const { title, description, status, items } = parsed.data;
   const normalizedItems = items?.map(normalizeLessonItemPayload);
-  const itemTextsForVocabulary = normalizedItems?.map((item) => item.text) ?? null;
-
   await prisma.$transaction(async (tx) => {
     await tx.lesson.update({
       where: { id: req.params.id },
@@ -328,14 +333,6 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
     }
   });
 
-  if (itemTextsForVocabulary?.length) {
-    await ensureVocabularyEntriesForLessonTexts(
-      prisma,
-      itemTextsForVocabulary,
-      req.user?.id,
-    );
-  }
-
   const updated = await prisma.lesson.findUnique({
     where: { id: req.params.id },
     include: {
@@ -347,17 +344,19 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
     return res.status(404).json({ message: 'Lesson not found' });
   }
 
-  const lessonVocabulary = await buildLessonVocabularyCoverage(
+  const lessonVocabulary = await buildLessonVocabularyPayload(
     prisma,
+    updated.id,
     updated.items.map((item) => item.text),
-    { createdById: req.user?.id, ensureMissing: true },
   );
 
   return res.json({
     lesson: {
       ...updated,
-      dictionary: lessonVocabulary.dictionary,
+      dictionary: lessonVocabulary.vocabulary,
       dictionaryCoverage: lessonVocabulary.coverage,
+      vocabulary: lessonVocabulary.vocabulary,
+      vocabularyCoverage: lessonVocabulary.coverage,
     },
   });
 });
@@ -433,10 +432,10 @@ router.delete('/lessons/:id', authenticate, async (req: AuthenticatedRequest, re
     }
 
     await prisma.$transaction(async (tx) => {
-      await tx.learnerLessonDictionaryEntry.deleteMany({
+      await tx.learnerLessonVocabularyEntry.deleteMany({
         where: { lessonId: req.params.id },
       });
-      await tx.lessonDictionaryEntry.deleteMany({
+      await tx.lessonVocabularyEntry.deleteMany({
         where: { lessonId: req.params.id },
       });
       await tx.lessonItem.deleteMany({
@@ -479,8 +478,6 @@ router.post('/lessons/:lessonId/items', authenticate, async (req: AuthenticatedR
       sentenceTimings: normalizedItem.sentenceTimings,
     },
   });
-
-  await ensureVocabularyEntriesForLessonTexts(prisma, [normalizedItem.text], req.user?.id);
 
   return res.status(201).json({ item: created });
 });

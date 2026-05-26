@@ -25,12 +25,10 @@ model User {
   createdAt                    DateTime  @default(now())
   updatedAt                    DateTime  @updatedAt
 
-  lessons                  Lesson[]                       @relation("LessonAuthor")
-  createdVocabularyEntries VocabularyEntry[]              @relation("VocabularyCreator")
-  learnerVocabulary        LearnerVocabulary[]
-  lessonDictionaryStatuses LearnerLessonDictionaryEntry[]
-  progressEvents           LearnerProgressEvent[]
-  refreshTokens            AuthRefreshToken[]
+  lessons                        Lesson[]                       @relation("LessonAuthor")
+  learnerLessonVocabularyEntries LearnerLessonVocabularyEntry[]
+  progressEvents                 LearnerProgressEvent[]
+  refreshTokens                  AuthRefreshToken[]
 }
 
 model Lesson {
@@ -44,8 +42,8 @@ model Lesson {
   authorId                       String
   author                         User                           @relation("LessonAuthor", fields: [authorId], references: [id])
   items                          LessonItem[]
-  dictionaryEntries              LessonDictionaryEntry[]
-  learnerLessonDictionaryEntries LearnerLessonDictionaryEntry[]
+  vocabularyEntries              LessonVocabularyEntry[]
+  learnerLessonVocabularyEntries LearnerLessonVocabularyEntry[]
 }
 
 model LessonItem {
@@ -60,7 +58,7 @@ model LessonItem {
   sentenceTimings   Json                    @default("[]")
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt
-  dictionaryEntries LessonDictionaryEntry[] @relation("LessonItemDictionarySource")
+  vocabularyEntries LessonVocabularyEntry[] @relation("LessonItemVocabularySource")
 
   @@unique([lessonId, order])
 }
@@ -70,101 +68,68 @@ enum LessonStatus {
   PUBLISHED
 }
 
-model VocabularyEntry {
-  id                             String                         @id @default(cuid())
-  englishText                    String
-  kind                           VocabularyKind                 @default(WORD)
-  notes                          String?
-  tags                           String[]
-  createdById                    String?
-  createdBy                      User?                          @relation("VocabularyCreator", fields: [createdById], references: [id])
-  translations                   VocabularyTranslation[]
-  learnerWords                   LearnerVocabulary[]
-  lessonDictionaryEntries        LessonDictionaryEntry[]
-  createdAt                      DateTime                       @default(now())
-  updatedAt                      DateTime                       @updatedAt
-  learnerLessonDictionaryEntries LearnerLessonDictionaryEntry[]
-}
-
-model VocabularyTranslation {
-  id           String          @id @default(cuid())
-  entryId      String
-  languageCode String
-  translation  String
-  usageExample String?
-  createdAt    DateTime        @default(now())
-  updatedAt    DateTime        @updatedAt
-  entry        VocabularyEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
-}
-
-model LearnerVocabulary {
-  id        String            @id @default(cuid())
-  userId    String
-  entryId   String
-  status    LearnerWordStatus @default(NEW)
-  addedAt   DateTime          @default(now())
-  updatedAt DateTime          @updatedAt
-  user      User              @relation(fields: [userId], references: [id])
-  entry     VocabularyEntry   @relation(fields: [entryId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, entryId])
-}
-
 enum VocabularyKind {
   WORD
   PHRASE
   SENTENCE
 }
 
-enum LearnerWordStatus {
-  NEW
-  REVIEWING
-  MASTERED
-}
-
-model LessonDictionaryEntry {
+model LessonVocabularyEntry {
   id              String                         @id @default(cuid())
   lessonId        String
-  lesson          Lesson                         @relation(fields: [lessonId], references: [id])
-  entryId         String
-  entry           VocabularyEntry                @relation(fields: [entryId], references: [id], onDelete: Cascade)
-  order           Int
+  lesson          Lesson                         @relation(fields: [lessonId], references: [id], onDelete: Cascade)
   sourceItemId    String?
-  sourceItem      LessonItem?                    @relation("LessonItemDictionarySource", fields: [sourceItemId], references: [id])
+  sourceItem      LessonItem?                    @relation("LessonItemVocabularySource", fields: [sourceItemId], references: [id], onDelete: SetNull)
+  englishText     String
+  normalizedText  String
+  kind            VocabularyKind                 @default(WORD)
+  order           Int
   notes           String?
+  tags            String[]
+  translations    LessonVocabularyTranslation[]
+  learnerStatuses LearnerLessonVocabularyEntry[]
   createdAt       DateTime                       @default(now())
   updatedAt       DateTime                       @updatedAt
-  learnerStatuses LearnerLessonDictionaryEntry[]
 
-  @@unique([lessonId, entryId])
+  @@unique([lessonId, normalizedText])
   @@unique([lessonId, order])
-  @@index([entryId])
   @@index([lessonId, sourceItemId])
 }
 
-model LearnerLessonDictionaryEntry {
-  id                String                        @id @default(cuid())
-  userId            String
-  user              User                          @relation(fields: [userId], references: [id])
-  lessonId          String
-  lesson            Lesson                        @relation(fields: [lessonId], references: [id])
-  entryId           String
-  entry             VocabularyEntry               @relation(fields: [entryId], references: [id], onDelete: Cascade)
-  dictionaryEntryId String?
-  dictionaryEntry   LessonDictionaryEntry?        @relation(fields: [dictionaryEntryId], references: [id])
-  status            LearnerLessonDictionaryStatus @default(NEW)
-  rightSwipes       Int                           @default(0)
-  leftSwipes        Int                           @default(0)
-  lastReviewedAt    DateTime?
-  firstSeenAt       DateTime                      @default(now())
-  updatedAt         DateTime                      @updatedAt
+model LessonVocabularyTranslation {
+  id           String                @id @default(cuid())
+  entryId      String
+  entry        LessonVocabularyEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  languageCode String
+  translation  String
+  usageExample String?
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+
+  @@unique([entryId, languageCode])
+}
+
+model LearnerLessonVocabularyEntry {
+  id             String                        @id @default(cuid())
+  userId         String
+  user           User                          @relation(fields: [userId], references: [id])
+  lessonId       String
+  lesson         Lesson                        @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  entryId        String
+  entry          LessonVocabularyEntry         @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  status         LearnerLessonVocabularyStatus @default(NEW)
+  rightSwipes    Int                           @default(0)
+  leftSwipes     Int                           @default(0)
+  lastReviewedAt DateTime?
+  firstSeenAt    DateTime                      @default(now())
+  updatedAt      DateTime                      @updatedAt
 
   @@unique([userId, lessonId, entryId])
   @@index([userId, lessonId, status])
   @@index([lessonId, entryId])
 }
 
-enum LearnerLessonDictionaryStatus {
+enum LearnerLessonVocabularyStatus {
   NEW
   LEARNING
   LEARNED
