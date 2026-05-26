@@ -7,6 +7,8 @@ import {
   autoDetectVocabularyKind,
   buildLessonVocabularyPayload,
   canonicalizeVocabularyText,
+  createLessonVocabularyEntriesFromTimingMarks,
+  getTimingMarkForVocabulary,
   getNextLessonVocabularyOrder,
   sortEntryTranslations,
 } from '../lib/vocabularyIngestion';
@@ -205,6 +207,36 @@ router.post(
     });
 
     return res.json({ deleted: deleted.count });
+  },
+);
+
+router.post(
+  '/lessons/:lessonId/vocabulary/pull-from-timings',
+  authenticate,
+  async (req: AuthenticatedRequest, res) => {
+    if (!requireAdmin(req, res)) return;
+
+    const lesson = await prisma.lesson.findUnique({
+      where: { id: req.params.lessonId },
+      include: { items: { orderBy: { order: 'asc' } } },
+    });
+    if (!lesson) return res.status(404).json({ message: 'Lesson not found' });
+
+    const result = await createLessonVocabularyEntriesFromTimingMarks(
+      prisma,
+      lesson.id,
+      lesson.items.map((item) => ({
+        id: item.id,
+        text: '',
+        wordTimings: Array.isArray(item.wordTimings)
+          ? item.wordTimings
+              .map((mark) => getTimingMarkForVocabulary(mark))
+              .filter((mark): mark is { text: string; normalizedText: string | null } => mark !== null)
+          : [],
+      })),
+    );
+
+    return res.json(result);
   },
 );
 

@@ -60,7 +60,7 @@ describe('lesson vocabulary ingestion', () => {
     assert.equal(word?.matchCount, 1);
   });
 
-  it('extracts editable vocabulary candidates from phrase timings and text tokens', () => {
+  it('extracts editable vocabulary candidates from phrase timings only', () => {
     const candidates = extractLessonVocabularyCandidates([
       {
         id: 'item-1',
@@ -71,8 +71,22 @@ describe('lesson vocabulary ingestion', () => {
 
     assert.equal(candidates.get('soap operas')?.kind, 'PHRASE');
     assert.equal(candidates.get('in the fall')?.sourceItemId, 'item-1');
-    assert.equal(candidates.get('robert')?.kind, 'WORD');
-    assert.equal(candidates.has('soap'), true);
-    assert.equal(candidates.has('fall'), true);
+    assert.equal(candidates.has('robert'), false);
+    assert.equal(candidates.has('soap'), false);
+    assert.equal(candidates.has('fall'), false);
+  });
+
+  it('can extract timing-only terms without sentence punctuation noise', () => {
+    const candidates = extractLessonVocabularyCandidates([
+      {
+        id: 'item-1',
+        text: '',
+        wordTimings: [{ text: 'romance.' }, { text: 'Robert Iger' }],
+      },
+    ]);
+
+    assert.equal(candidates.size, 2);
+    assert.equal(candidates.get('romance')?.kind, 'WORD');
+    assert.equal(candidates.get('robert iger')?.kind, 'PHRASE');
   });
 });

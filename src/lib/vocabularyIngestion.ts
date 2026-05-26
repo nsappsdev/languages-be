@@ -62,6 +62,28 @@ export function autoDetectVocabularyKind(text: string): VocabularyKind {
   return normalized.split(/\s+/).filter(Boolean).length > 1 ? 'PHRASE' : 'WORD';
 }
 
+export function normalizeTimingVocabularyText(value: string) {
+  return value
+    .trim()
+    .replace(/[’]/g, "'")
+    .replace(/^[^A-Za-z0-9']+|[^A-Za-z0-9']+$/g, '')
+    .trim();
+}
+
+export function getTimingMarkForVocabulary(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const rawText = typeof record.text === 'string' ? normalizeTimingVocabularyText(record.text) : '';
+  const normalizedText =
+    typeof record.normalizedText === 'string' ? canonicalizeVocabularyText(record.normalizedText) : '';
+  const text = rawText || normalizedText;
+  if (!text) return null;
+  return {
+    text,
+    normalizedText: normalizedText || null,
+  };
+}
+
 export function tokenizeVocabularyText(text: string): TextToken[] {
   const tokens: TextToken[] = [];
   for (const match of text.replace(/[’]/g, "'").matchAll(TOKEN_PATTERN)) {
@@ -101,19 +123,15 @@ export function extractLessonVocabularyCandidates(items: LessonVocabularySourceI
     const sourceItemId = item.id ?? null;
 
     for (const mark of item.wordTimings ?? []) {
-      const text = mark.text || mark.normalizedText || '';
+      const text = normalizeTimingVocabularyText(mark.text || mark.normalizedText || '');
       addCandidate(text, sourceItemId);
-    }
-
-    for (const token of tokenizeVocabularyText(item.text)) {
-      addCandidate(token.normalized, sourceItemId);
     }
   }
 
   return candidates;
 }
 
-export async function ensureLessonVocabularyEntriesForItems(
+export async function createLessonVocabularyEntriesFromTimingMarks(
   db: DbClient,
   lessonId: string,
   items: LessonVocabularySourceItem[],

@@ -9,8 +9,6 @@ import { transcribeAudioWithWordTimestamps } from '../lib/openaiTranscription';
 import {
   buildLessonVocabularyPayload,
   canonicalizeVocabularyText,
-  ensureLessonVocabularyEntriesForItems,
-  LessonVocabularySourceItem,
 } from '../lib/vocabularyIngestion';
 
 const router = Router();
@@ -170,32 +168,6 @@ function normalizeLessonItemPayload(item: ParsedLessonItem, index: number) {
   };
 }
 
-function getTimingMarkForVocabulary(value: unknown) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  if (typeof record.text !== 'string' || !record.text.trim()) return null;
-  return {
-    text: record.text,
-    normalizedText: typeof record.normalizedText === 'string' ? record.normalizedText : null,
-  };
-}
-
-function toVocabularySourceItems(
-  items: Array<{
-    id?: string | null;
-    text: string;
-    wordTimings?: Prisma.JsonValue | null;
-  }>,
-): LessonVocabularySourceItem[] {
-  return items.map((item) => ({
-    id: item.id ?? null,
-    text: item.text,
-    wordTimings: Array.isArray(item.wordTimings)
-      ? item.wordTimings.map(getTimingMarkForVocabulary).filter((mark) => mark !== null)
-      : [],
-  }));
-}
-
 const requireAdmin = (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
     res.status(401).json({ message: 'Unauthorized' });
@@ -292,12 +264,6 @@ router.post('/lessons', authenticate, async (req: AuthenticatedRequest, res) => 
     },
   });
 
-  await ensureLessonVocabularyEntriesForItems(
-    prisma,
-    created.id,
-    toVocabularySourceItems(created.items),
-  );
-
   const lessonVocabulary = await buildLessonVocabularyPayload(
     prisma,
     created.id,
@@ -377,12 +343,6 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
   if (!updated) {
     return res.status(404).json({ message: 'Lesson not found' });
   }
-
-  await ensureLessonVocabularyEntriesForItems(
-    prisma,
-    updated.id,
-    toVocabularySourceItems(updated.items),
-  );
 
   const lessonVocabulary = await buildLessonVocabularyPayload(
     prisma,
@@ -518,12 +478,6 @@ router.post('/lessons/:lessonId/items', authenticate, async (req: AuthenticatedR
       sentenceTimings: normalizedItem.sentenceTimings,
     },
   });
-
-  await ensureLessonVocabularyEntriesForItems(
-    prisma,
-    lesson.id,
-    toVocabularySourceItems([created]),
-  );
 
   return res.status(201).json({ item: created });
 });
