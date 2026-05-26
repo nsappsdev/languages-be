@@ -1,177 +1,277 @@
-import { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient, VocabularyKind } from '@prisma/client';
 
 type DbClient = PrismaClient | Prisma.TransactionClient;
 
-const LESSON_WORD_PATTERN = /[A-Za-z]+(?:'[A-Za-z]+)?/g;
 const ARMENIAN_LANGUAGE_CODES = new Set(['am', 'hy']);
+const TOKEN_PATTERN = /[A-Za-z0-9]+(?:[’'][A-Za-z0-9]+)?/g;
 
-export const canonicalizeVocabularyText = (value: string) =>
-  value
-    .trim()
-    .toLowerCase()
-    .replace(/[’]/g, "'")
-    .replace(/(^'+|'+$)/g, '')
-    .replace(/'s$/g, '');
-
-export const extractLessonWords = (texts: string[]) => {
-  const uniqueWords = new Set<string>();
-
-  for (const text of texts) {
-    const normalized = text.replace(/[“”]/g, '"').replace(/[’]/g, "'");
-    const matches = normalized.match(LESSON_WORD_PATTERN) ?? [];
-
-    for (const match of matches) {
-      const word = canonicalizeVocabularyText(match);
-      if (word.length >= 1) {
-        uniqueWords.add(word);
-      }
-    }
-  }
-
-  return [...uniqueWords].sort((left, right) => left.localeCompare(right));
-};
-
-export async function ensureVocabularyEntriesForLessonTexts(
-  db: DbClient,
-  texts: string[],
-  createdById?: string | null,
-) {
-  const candidateWords = extractLessonWords(texts);
-  if (!candidateWords.length) {
-    return { createdCount: 0, totalWords: 0 };
-  }
-
-  const existingEntries = await db.vocabularyEntry.findMany({
-    select: { englishText: true },
-  });
-
-  const existingWords = new Set(
-    existingEntries.map((entry) => canonicalizeVocabularyText(entry.englishText)),
-  );
-
-  const missingWords = candidateWords.filter((word) => !existingWords.has(word));
-
-  if (missingWords.length) {
-    await db.vocabularyEntry.createMany({
-      data: missingWords.map((word) => ({
-        englishText: word,
-        kind: 'WORD',
-        createdById: createdById ?? undefined,
-      })),
-    });
-  }
-
-  return {
-    createdCount: missingWords.length,
-    totalWords: candidateWords.length,
-  };
-}
-
-type VocabularyEntryWithTranslations = Awaited<
-  ReturnType<DbClient['vocabularyEntry']['findMany']>
->[number] & {
-  translations: Awaited<ReturnType<DbClient['vocabularyTranslation']['findMany']>>;
-};
+export type LessonVocabularyEntryWithTranslations = Prisma.LessonVocabularyEntryGetPayload<{
+  include: { translations: true };
+}>;
 
 export interface LessonVocabularyCoverageItem {
   text: string;
   normalizedText: string;
-  kind: 'WORD' | 'PHRASE' | 'SENTENCE';
+  kind: VocabularyKind;
   entryId: string | null;
   hasTranslation: boolean;
   hasArmenianTranslation: boolean;
-  translations: VocabularyEntryWithTranslations['translations'];
+  translations: LessonVocabularyEntryWithTranslations['translations'];
+  matched: boolean;
+  matchCount: number;
 }
 
-export async function buildLessonVocabularyCoverage(
-  db: DbClient,
-  texts: string[],
-  options: { createdById?: string | null; ensureMissing?: boolean } = {},
-) {
-  if (options.ensureMissing) {
-    await ensureVocabularyEntriesForLessonTexts(db, texts, options.createdById);
-  }
+type TextToken = {
+  normalized: string;
+  start: number;
+  end: number;
+  text: string;
+};
 
-  const lessonWords = extractLessonWords(texts);
-  const lessonWordSet = new Set(lessonWords);
-  const allWordEntries = lessonWords.length
-    ? await db.vocabularyEntry.findMany({
-        where: { kind: 'WORD' },
-        include: { translations: true },
-      })
-    : [];
-  const wordEntries = allWordEntries.filter((entry) =>
-    lessonWordSet.has(canonicalizeVocabularyText(entry.englishText)),
-  );
+export type LessonVocabularySourceItem = {
+  id?: string | null;
+  text: string;
+  wordTimings?: Array<{
+    text: string;
+    normalizedText?: string | null;
+  }>;
+};
 
-  const entriesByText = new Map(
-    wordEntries.map((entry) => [canonicalizeVocabularyText(entry.englishText), entry]),
-  );
-
-  const wordCoverage = lessonWords.map((word): LessonVocabularyCoverageItem => {
-    const entry = entriesByText.get(word) ?? null;
-    return toCoverageItem(word, word, 'WORD', entry);
-  });
-
-  const phraseEntries = await db.vocabularyEntry.findMany({
-    where: {
-      kind: { in: ['PHRASE', 'SENTENCE'] },
-    },
-    include: { translations: true },
-  });
-  const normalizedLessonText = normalizeForPhraseSearch(texts.join(' '));
-  const matchingPhraseEntries = phraseEntries.filter((entry) => {
-    const phrase = normalizeForPhraseSearch(entry.englishText);
-    return phrase.length > 0 && normalizedLessonText.includes(phrase);
-  });
-  const phraseCoverage = matchingPhraseEntries.map((entry) =>
-    toCoverageItem(
-      entry.englishText,
-      canonicalizeVocabularyText(entry.englishText),
-      entry.kind,
-      entry,
-    ),
-  );
-
-  const dictionaryById = new Map<string, VocabularyEntryWithTranslations>();
-  for (const entry of [...wordEntries, ...matchingPhraseEntries]) {
-    dictionaryById.set(entry.id, entry);
-  }
-
-  return {
-    coverage: [...wordCoverage, ...phraseCoverage],
-    dictionary: [...dictionaryById.values()].sort((left, right) =>
-      left.englishText.localeCompare(right.englishText),
-    ),
-  };
+export interface AutoCreateLessonVocabularyResult {
+  candidates: number;
+  created: number;
+  skipped: number;
 }
 
-function toCoverageItem(
-  text: string,
-  normalizedText: string,
-  kind: 'WORD' | 'PHRASE' | 'SENTENCE',
-  entry: VocabularyEntryWithTranslations | null,
-): LessonVocabularyCoverageItem {
-  const translations = entry?.translations ?? [];
-  return {
-    text,
-    normalizedText,
-    kind,
-    entryId: entry?.id ?? null,
-    hasTranslation: translations.length > 0,
-    hasArmenianTranslation: translations.some((translation) =>
-      ARMENIAN_LANGUAGE_CODES.has(translation.languageCode.toLowerCase()),
-    ),
-    translations,
-  };
-}
-
-function normalizeForPhraseSearch(value: string) {
+export function canonicalizeVocabularyText(value: string) {
   return value
     .trim()
     .toLowerCase()
-    .replace(/[“”]/g, '"')
     .replace(/[’]/g, "'")
     .replace(/[^a-z0-9']+/g, ' ')
-    .replace(/\s+/g, ' ');
+    .replace(/\s+/g, ' ')
+    .split(' ')
+    .map((part) => part.replace(/(^'+|'+$)/g, '').replace(/'s$/g, ''))
+    .filter(Boolean)
+    .join(' ');
+}
+
+export function autoDetectVocabularyKind(text: string): VocabularyKind {
+  const normalized = canonicalizeVocabularyText(text);
+  if (/[.!?]/.test(text)) return 'SENTENCE';
+  return normalized.split(/\s+/).filter(Boolean).length > 1 ? 'PHRASE' : 'WORD';
+}
+
+export function tokenizeVocabularyText(text: string): TextToken[] {
+  const tokens: TextToken[] = [];
+  for (const match of text.replace(/[’]/g, "'").matchAll(TOKEN_PATTERN)) {
+    const raw = match[0];
+    const normalized = canonicalizeVocabularyText(raw);
+    if (!normalized) continue;
+    tokens.push({
+      normalized,
+      start: match.index ?? 0,
+      end: (match.index ?? 0) + raw.length,
+      text: raw,
+    });
+  }
+  return tokens;
+}
+
+export function extractLessonVocabularyCandidates(items: LessonVocabularySourceItem[]) {
+  const candidates = new Map<
+    string,
+    {
+      englishText: string;
+      kind: VocabularyKind;
+      sourceItemId: string | null;
+    }
+  >();
+  const addCandidate = (englishText: string, sourceItemId: string | null) => {
+    const normalizedText = canonicalizeVocabularyText(englishText);
+    if (!normalizedText || candidates.has(normalizedText)) return;
+    candidates.set(normalizedText, {
+      englishText: englishText.trim(),
+      kind: autoDetectVocabularyKind(englishText),
+      sourceItemId,
+    });
+  };
+
+  for (const item of items) {
+    const sourceItemId = item.id ?? null;
+
+    for (const mark of item.wordTimings ?? []) {
+      const text = mark.text || mark.normalizedText || '';
+      addCandidate(text, sourceItemId);
+    }
+
+    for (const token of tokenizeVocabularyText(item.text)) {
+      addCandidate(token.normalized, sourceItemId);
+    }
+  }
+
+  return candidates;
+}
+
+export async function ensureLessonVocabularyEntriesForItems(
+  db: DbClient,
+  lessonId: string,
+  items: LessonVocabularySourceItem[],
+): Promise<AutoCreateLessonVocabularyResult> {
+  const candidates = extractLessonVocabularyCandidates(items);
+  if (!candidates.size) {
+    return { candidates: 0, created: 0, skipped: 0 };
+  }
+
+  const existing = await db.lessonVocabularyEntry.findMany({
+    where: { lessonId },
+    select: { normalizedText: true, order: true },
+  });
+  const existingNormalized = new Set(existing.map((entry) => entry.normalizedText));
+  let nextOrder = existing.reduce((max, entry) => Math.max(max, entry.order), -1) + 1;
+  let created = 0;
+
+  for (const [normalizedText, candidate] of candidates) {
+    if (existingNormalized.has(normalizedText)) continue;
+
+    await db.lessonVocabularyEntry.create({
+      data: {
+        lessonId,
+        sourceItemId: candidate.sourceItemId,
+        englishText: candidate.englishText,
+        normalizedText,
+        kind: candidate.kind,
+        order: nextOrder,
+        tags: [],
+      },
+    });
+    existingNormalized.add(normalizedText);
+    nextOrder += 1;
+    created += 1;
+  }
+
+  return {
+    candidates: candidates.size,
+    created,
+    skipped: candidates.size - created,
+  };
+}
+
+export async function getLessonVocabulary(db: DbClient, lessonId: string) {
+  return db.lessonVocabularyEntry.findMany({
+    where: { lessonId },
+    orderBy: [{ order: 'asc' }, { englishText: 'asc' }],
+    include: { translations: true },
+  });
+}
+
+export async function getNextLessonVocabularyOrder(db: DbClient, lessonId: string) {
+  const last = await db.lessonVocabularyEntry.findFirst({
+    where: { lessonId },
+    orderBy: { order: 'desc' },
+    select: { order: true },
+  });
+  return (last?.order ?? -1) + 1;
+}
+
+export async function buildLessonVocabularyPayload(
+  db: DbClient,
+  lessonId: string,
+  texts?: string[],
+) {
+  const [entries, lessonItems] = await Promise.all([
+    getLessonVocabulary(db, lessonId),
+    texts
+      ? Promise.resolve(null)
+      : db.lessonItem.findMany({
+          where: { lessonId },
+          orderBy: { order: 'asc' },
+          select: { text: true },
+        }),
+  ]);
+  const lessonTexts = texts ?? lessonItems?.map((item) => item.text) ?? [];
+  const coverage = buildLessonVocabularyCoverage(entries, lessonTexts);
+
+  return {
+    coverage,
+    vocabulary: entries.map(sortEntryTranslations),
+  };
+}
+
+export function buildLessonVocabularyCoverage(
+  entries: LessonVocabularyEntryWithTranslations[],
+  texts: string[],
+): LessonVocabularyCoverageItem[] {
+  const matchCounts = countEntryMatches(entries, texts);
+
+  return entries.map((entry) => {
+    const translations = sortTranslations(entry.translations);
+    const matchCount = matchCounts.get(entry.id) ?? 0;
+    return {
+      text: entry.englishText,
+      normalizedText: entry.normalizedText,
+      kind: entry.kind,
+      entryId: entry.id,
+      hasTranslation: translations.length > 0,
+      hasArmenianTranslation: translations.some((translation) =>
+        ARMENIAN_LANGUAGE_CODES.has(translation.languageCode.toLowerCase()),
+      ),
+      translations,
+      matched: matchCount > 0,
+      matchCount,
+    };
+  });
+}
+
+function countEntryMatches(entries: LessonVocabularyEntryWithTranslations[], texts: string[]) {
+  const counts = new Map<string, number>();
+  const matchableEntries = entries
+    .map((entry) => ({
+      entry,
+      parts: entry.normalizedText.split(/\s+/).filter(Boolean),
+    }))
+    .filter((item) => item.parts.length > 0)
+    .sort((left, right) => right.parts.length - left.parts.length);
+
+  for (const text of texts) {
+    const tokens = tokenizeVocabularyText(text);
+    const occupied = new Set<number>();
+
+    for (let tokenIndex = 0; tokenIndex < tokens.length; tokenIndex += 1) {
+      if (occupied.has(tokenIndex)) continue;
+
+      for (const candidate of matchableEntries) {
+        const { parts } = candidate;
+        if (tokenIndex + parts.length > tokens.length) continue;
+        if (parts.some((part, offset) => tokens[tokenIndex + offset]?.normalized !== part)) {
+          continue;
+        }
+
+        for (let offset = 0; offset < parts.length; offset += 1) {
+          occupied.add(tokenIndex + offset);
+        }
+        counts.set(candidate.entry.id, (counts.get(candidate.entry.id) ?? 0) + 1);
+        break;
+      }
+    }
+  }
+
+  return counts;
+}
+
+export function sortEntryTranslations<T extends LessonVocabularyEntryWithTranslations>(entry: T): T {
+  return {
+    ...entry,
+    translations: sortTranslations(entry.translations),
+  };
+}
+
+export function sortTranslations<T extends { languageCode: string }>(translations: T[]) {
+  return [...translations].sort((left, right) => {
+    if (left.languageCode === 'am' && right.languageCode !== 'am') return -1;
+    if (left.languageCode !== 'am' && right.languageCode === 'am') return 1;
+    if (left.languageCode === 'hy' && right.languageCode !== 'hy') return -1;
+    if (left.languageCode !== 'hy' && right.languageCode === 'hy') return 1;
+    return left.languageCode.localeCompare(right.languageCode);
+  });
 }

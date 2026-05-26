@@ -7,9 +7,10 @@ import { resolveStoredAudioPath } from '../lib/audioStorage';
 import { generateLessonTimingsFromTranscript } from '../lib/lessonTimingAlignment';
 import { transcribeAudioWithWordTimestamps } from '../lib/openaiTranscription';
 import {
-  buildLessonVocabularyCoverage,
+  buildLessonVocabularyPayload,
   canonicalizeVocabularyText,
-  ensureVocabularyEntriesForLessonTexts,
+  ensureLessonVocabularyEntriesForItems,
+  LessonVocabularySourceItem,
 } from '../lib/vocabularyIngestion';
 
 const router = Router();
@@ -169,6 +170,32 @@ function normalizeLessonItemPayload(item: ParsedLessonItem, index: number) {
   };
 }
 
+function getTimingMarkForVocabulary(value: unknown) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.text !== 'string' || !record.text.trim()) return null;
+  return {
+    text: record.text,
+    normalizedText: typeof record.normalizedText === 'string' ? record.normalizedText : null,
+  };
+}
+
+function toVocabularySourceItems(
+  items: Array<{
+    id?: string | null;
+    text: string;
+    wordTimings?: Prisma.JsonValue | null;
+  }>,
+): LessonVocabularySourceItem[] {
+  return items.map((item) => ({
+    id: item.id ?? null,
+    text: item.text,
+    wordTimings: Array.isArray(item.wordTimings)
+      ? item.wordTimings.map(getTimingMarkForVocabulary).filter((mark) => mark !== null)
+      : [],
+  }));
+}
+
 const requireAdmin = (req: AuthenticatedRequest, res: Response) => {
   if (!req.user) {
     res.status(401).json({ message: 'Unauthorized' });
@@ -213,17 +240,19 @@ router.get('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res) 
     return res.status(404).json({ message: 'Lesson not found' });
   }
 
-  const lessonVocabulary = await buildLessonVocabularyCoverage(
+  const lessonVocabulary = await buildLessonVocabularyPayload(
     prisma,
+    lesson.id,
     lesson.items.map((item) => item.text),
-    { createdById: req.user?.id, ensureMissing: true },
   );
 
   return res.json({
     lesson: {
       ...lesson,
-      dictionary: lessonVocabulary.dictionary,
+      dictionary: lessonVocabulary.vocabulary,
       dictionaryCoverage: lessonVocabulary.coverage,
+      vocabulary: lessonVocabulary.vocabulary,
+      vocabularyCoverage: lessonVocabulary.coverage,
     },
   });
 });
@@ -263,15 +292,27 @@ router.post('/lessons', authenticate, async (req: AuthenticatedRequest, res) => 
     },
   });
 
-  if (normalizedItems?.length) {
-    await ensureVocabularyEntriesForLessonTexts(
-      prisma,
-      normalizedItems.map((item) => item.text),
-      req.user?.id,
-    );
-  }
+  await ensureLessonVocabularyEntriesForItems(
+    prisma,
+    created.id,
+    toVocabularySourceItems(created.items),
+  );
 
-  return res.status(201).json({ lesson: created });
+  const lessonVocabulary = await buildLessonVocabularyPayload(
+    prisma,
+    created.id,
+    created.items.map((item) => item.text),
+  );
+
+  return res.status(201).json({
+    lesson: {
+      ...created,
+      dictionary: lessonVocabulary.vocabulary,
+      dictionaryCoverage: lessonVocabulary.coverage,
+      vocabulary: lessonVocabulary.vocabulary,
+      vocabularyCoverage: lessonVocabulary.coverage,
+    },
+  });
 });
 
 router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res) => {
@@ -291,8 +332,6 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
 
   const { title, description, status, items } = parsed.data;
   const normalizedItems = items?.map(normalizeLessonItemPayload);
-  const itemTextsForVocabulary = normalizedItems?.map((item) => item.text) ?? null;
-
   await prisma.$transaction(async (tx) => {
     await tx.lesson.update({
       where: { id: req.params.id },
@@ -328,14 +367,6 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
     }
   });
 
-  if (itemTextsForVocabulary?.length) {
-    await ensureVocabularyEntriesForLessonTexts(
-      prisma,
-      itemTextsForVocabulary,
-      req.user?.id,
-    );
-  }
-
   const updated = await prisma.lesson.findUnique({
     where: { id: req.params.id },
     include: {
@@ -347,17 +378,25 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
     return res.status(404).json({ message: 'Lesson not found' });
   }
 
-  const lessonVocabulary = await buildLessonVocabularyCoverage(
+  await ensureLessonVocabularyEntriesForItems(
     prisma,
+    updated.id,
+    toVocabularySourceItems(updated.items),
+  );
+
+  const lessonVocabulary = await buildLessonVocabularyPayload(
+    prisma,
+    updated.id,
     updated.items.map((item) => item.text),
-    { createdById: req.user?.id, ensureMissing: true },
   );
 
   return res.json({
     lesson: {
       ...updated,
-      dictionary: lessonVocabulary.dictionary,
+      dictionary: lessonVocabulary.vocabulary,
       dictionaryCoverage: lessonVocabulary.coverage,
+      vocabulary: lessonVocabulary.vocabulary,
+      vocabularyCoverage: lessonVocabulary.coverage,
     },
   });
 });
@@ -433,10 +472,10 @@ router.delete('/lessons/:id', authenticate, async (req: AuthenticatedRequest, re
     }
 
     await prisma.$transaction(async (tx) => {
-      await tx.learnerLessonDictionaryEntry.deleteMany({
+      await tx.learnerLessonVocabularyEntry.deleteMany({
         where: { lessonId: req.params.id },
       });
-      await tx.lessonDictionaryEntry.deleteMany({
+      await tx.lessonVocabularyEntry.deleteMany({
         where: { lessonId: req.params.id },
       });
       await tx.lessonItem.deleteMany({
@@ -480,7 +519,11 @@ router.post('/lessons/:lessonId/items', authenticate, async (req: AuthenticatedR
     },
   });
 
-  await ensureVocabularyEntriesForLessonTexts(prisma, [normalizedItem.text], req.user?.id);
+  await ensureLessonVocabularyEntriesForItems(
+    prisma,
+    lesson.id,
+    toVocabularySourceItems([created]),
+  );
 
   return res.status(201).json({ item: created });
 });

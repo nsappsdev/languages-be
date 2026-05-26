@@ -40,7 +40,7 @@ const buildLearnerSummary = async (learners: Array<{
 
   const learnerIds = learners.map((learner) => learner.id);
   const [vocabularyCounts, progressCounts] = await Promise.all([
-    prisma.learnerVocabulary.groupBy({
+    prisma.learnerLessonVocabularyEntry.groupBy({
       by: ['userId'],
       where: { userId: { in: learnerIds } },
       _count: { _all: true },
