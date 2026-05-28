@@ -174,6 +174,31 @@ const swaggerDefinition = {
           message: { type: 'string', example: 'Invalid credentials' },
         },
       },
+      AppVersionPolicy: {
+        type: 'object',
+        properties: {
+          platform: { type: 'string', enum: ['android', 'ios'] },
+          enabled: { type: 'boolean' },
+          latestBuildNumber: { type: 'integer', example: 24 },
+          minSupportedBuildNumber: { type: 'integer', example: 20 },
+          storeUrl: { type: 'string' },
+          message: { type: 'string' },
+        },
+      },
+      AppVersionResponse: {
+        type: 'object',
+        properties: {
+          currentBuildNumber: { type: 'integer', example: 20 },
+          policy: { $ref: '#/components/schemas/AppVersionPolicy' },
+          update: {
+            type: 'object',
+            properties: {
+              available: { type: 'boolean' },
+              required: { type: 'boolean' },
+            },
+          },
+        },
+      },
       AnalyticsOverview: {
         type: 'object',
         properties: {
@@ -360,8 +385,43 @@ const swaggerDefinition = {
       name: 'Media',
       description: 'Admin media upload endpoints.',
     },
+    {
+      name: 'Settings',
+      description: 'Global app settings and mobile app update policy.',
+    },
   ],
   paths: {
+    '/app-version': {
+      get: {
+        tags: ['Settings'],
+        summary: 'Evaluate native app update policy for the current build',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'platform',
+            in: 'query',
+            required: true,
+            schema: { type: 'string', enum: ['android', 'ios'] },
+          },
+          {
+            name: 'buildNumber',
+            in: 'query',
+            required: true,
+            schema: { type: 'integer', minimum: 0 },
+          },
+        ],
+        responses: {
+          200: {
+            description: 'App version policy decision',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/AppVersionResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
     '/auth/login': {
       post: {
         tags: ['Auth'],

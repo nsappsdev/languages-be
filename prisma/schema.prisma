@@ -169,6 +169,14 @@ model AppSettings {
   translationFontMaxSize      Int      @default(15)
   translationLetterSpacingMin Float    @default(-0.2)
   translationLetterSpacingMax Float    @default(0.8)
+  updatePolicyEnabled         Boolean  @default(false)
+  latestAndroidBuildNumber    Int      @default(0)
+  minAndroidBuildNumber       Int      @default(0)
+  latestIosBuildNumber        Int      @default(0)
+  minIosBuildNumber           Int      @default(0)
+  androidStoreUrl             String   @default("https://play.google.com/store/apps/details?id=com.nsappsdev.language")
+  iosStoreUrl                 String   @default("")
+  updateMessage               String   @default("A newer app version is available.")
   createdAt                   DateTime @default(now())
   updatedAt                   DateTime @updatedAt
 }

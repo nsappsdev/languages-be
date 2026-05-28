@@ -12,6 +12,7 @@ import { progressRouter } from './routes/progress';
 import { mediaRouter } from './routes/media';
 import { lessonVocabularyRouter } from './routes/lessonVocabulary';
 import { settingsRouter } from './routes/settings';
+import { appVersionRouter } from './routes/appVersion';
 
 const app = express();
 
@@ -37,6 +38,7 @@ app.use('/api', progressRouter);
 app.use('/api', mediaRouter);
 app.use('/api', lessonVocabularyRouter);
 app.use('/api', settingsRouter);
+app.use('/api', appVersionRouter);
 
 app.listen(config.port, () => {
   console.log(`Backend listening on http://localhost:${config.port}`);

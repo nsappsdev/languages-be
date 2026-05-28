@@ -110,6 +110,14 @@ const updateSettingsSchema = z.object({
   translationFontMaxSize: z.number().int().min(6).max(24).optional(),
   translationLetterSpacingMin: z.number().min(-2).max(4).optional(),
   translationLetterSpacingMax: z.number().min(-2).max(4).optional(),
+  updatePolicyEnabled: z.boolean().optional(),
+  latestAndroidBuildNumber: z.number().int().min(0).optional(),
+  minAndroidBuildNumber: z.number().int().min(0).optional(),
+  latestIosBuildNumber: z.number().int().min(0).optional(),
+  minIosBuildNumber: z.number().int().min(0).optional(),
+  androidStoreUrl: z.string().trim().url().or(z.literal('')).optional(),
+  iosStoreUrl: z.string().trim().url().or(z.literal('')).optional(),
+  updateMessage: z.string().trim().min(1).max(240).optional(),
 }).superRefine((settings, ctx) => {
   if (
     settings.translationFontMinSize !== undefined &&
@@ -131,6 +139,28 @@ const updateSettingsSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['translationLetterSpacingMax'],
       message: 'translationLetterSpacingMax must be greater than or equal to translationLetterSpacingMin',
+    });
+  }
+  if (
+    settings.minAndroidBuildNumber !== undefined &&
+    settings.latestAndroidBuildNumber !== undefined &&
+    settings.minAndroidBuildNumber > settings.latestAndroidBuildNumber
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['minAndroidBuildNumber'],
+      message: 'minAndroidBuildNumber must be less than or equal to latestAndroidBuildNumber',
+    });
+  }
+  if (
+    settings.minIosBuildNumber !== undefined &&
+    settings.latestIosBuildNumber !== undefined &&
+    settings.minIosBuildNumber > settings.latestIosBuildNumber
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['minIosBuildNumber'],
+      message: 'minIosBuildNumber must be less than or equal to latestIosBuildNumber',
     });
   }
   if (!settings.readingModes) return;
