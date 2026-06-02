@@ -17,6 +17,8 @@ const createEntry = (
   sourceItemId: null,
   englishText,
   normalizedText: canonicalizeVocabularyText(englishText),
+  focusText: null,
+  focusNormalizedText: null,
   kind,
   order: 0,
   notes: null,
@@ -74,6 +76,21 @@ describe('lesson vocabulary ingestion', () => {
     assert.equal(candidates.has('robert'), false);
     assert.equal(candidates.has('soap'), false);
     assert.equal(candidates.has('fall'), false);
+  });
+
+  it('extracts editable vocabulary candidates from logical chunks', () => {
+    const candidates = extractLessonVocabularyCandidates([
+      {
+        id: 'item-1',
+        text: 'Robert Iger watched soap operas in the fall.',
+        chunkTimings: [{ text: 'in the fall' }],
+        wordTimings: [{ text: 'fall' }],
+      },
+    ]);
+
+    assert.equal(candidates.get('in the fall')?.kind, 'PHRASE');
+    assert.equal(candidates.get('in the fall')?.focusNormalizedText, 'fall');
+    assert.equal(candidates.get('fall')?.kind, 'WORD');
   });
 
   it('can extract timing-only terms without sentence punctuation noise', () => {

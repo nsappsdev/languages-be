@@ -56,6 +56,7 @@ model LessonItem {
   segments          Json
   wordTimings       Json                    @default("[]")
   sentenceTimings   Json                    @default("[]")
+  chunkTimings      Json                    @default("[]")
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt
   vocabularyEntries LessonVocabularyEntry[] @relation("LessonItemVocabularySource")
@@ -75,21 +76,23 @@ enum VocabularyKind {
 }
 
 model LessonVocabularyEntry {
-  id              String                         @id @default(cuid())
-  lessonId        String
-  lesson          Lesson                         @relation(fields: [lessonId], references: [id], onDelete: Cascade)
-  sourceItemId    String?
-  sourceItem      LessonItem?                    @relation("LessonItemVocabularySource", fields: [sourceItemId], references: [id], onDelete: SetNull)
-  englishText     String
-  normalizedText  String
-  kind            VocabularyKind                 @default(WORD)
-  order           Int
-  notes           String?
-  tags            String[]
-  translations    LessonVocabularyTranslation[]
-  learnerStatuses LearnerLessonVocabularyEntry[]
-  createdAt       DateTime                       @default(now())
-  updatedAt       DateTime                       @updatedAt
+  id                  String                         @id @default(cuid())
+  lessonId            String
+  lesson              Lesson                         @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  sourceItemId        String?
+  sourceItem          LessonItem?                    @relation("LessonItemVocabularySource", fields: [sourceItemId], references: [id], onDelete: SetNull)
+  englishText         String
+  normalizedText      String
+  focusText           String?
+  focusNormalizedText String?
+  kind                VocabularyKind                 @default(WORD)
+  order               Int
+  notes               String?
+  tags                String[]
+  translations        LessonVocabularyTranslation[]
+  learnerStatuses     LearnerLessonVocabularyEntry[]
+  createdAt           DateTime                       @default(now())
+  updatedAt           DateTime                       @updatedAt
 
   @@unique([lessonId, normalizedText])
   @@unique([lessonId, order])
@@ -169,6 +172,7 @@ model AppSettings {
   translationFontMaxSize      Int      @default(15)
   translationLetterSpacingMin Float    @default(-0.2)
   translationLetterSpacingMax Float    @default(0.8)
+  wordRepetitionPauseMs       Int      @default(800)
   updatePolicyEnabled         Boolean  @default(false)
   latestAndroidBuildNumber    Int      @default(0)
   minAndroidBuildNumber       Int      @default(0)

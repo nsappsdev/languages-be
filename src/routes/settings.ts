@@ -110,6 +110,7 @@ const updateSettingsSchema = z.object({
   translationFontMaxSize: z.number().int().min(6).max(24).optional(),
   translationLetterSpacingMin: z.number().min(-2).max(4).optional(),
   translationLetterSpacingMax: z.number().min(-2).max(4).optional(),
+  wordRepetitionPauseMs: z.number().int().min(0).max(3000).optional(),
   updatePolicyEnabled: z.boolean().optional(),
   latestAndroidBuildNumber: z.number().int().min(0).optional(),
   minAndroidBuildNumber: z.number().int().min(0).optional(),
