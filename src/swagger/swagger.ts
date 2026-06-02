@@ -31,6 +31,29 @@ const swaggerDefinition = {
           endMs: { type: 'integer', example: 1800 },
         },
       },
+      LessonItemWordTiming: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          text: { type: 'string' },
+          normalizedText: { type: 'string' },
+          startMs: { type: 'integer', example: 0 },
+          endMs: { type: 'integer', example: 350 },
+          order: { type: 'integer' },
+        },
+      },
+      LessonItemChunkTiming: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          text: { type: 'string', example: 'in the fall' },
+          normalizedText: { type: 'string', example: 'in the fall' },
+          startMs: { type: 'integer', example: 1200 },
+          endMs: { type: 'integer', example: 1850 },
+          wordMarkIds: { type: 'array', items: { type: 'string' } },
+          order: { type: 'integer' },
+        },
+      },
       LessonItem: {
         type: 'object',
         properties: {
@@ -41,6 +64,14 @@ const swaggerDefinition = {
           segments: {
             type: 'array',
             items: { $ref: '#/components/schemas/LessonItemSegment' },
+          },
+          wordTimings: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/LessonItemWordTiming' },
+          },
+          chunkTimings: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/LessonItemChunkTiming' },
           },
         },
       },
@@ -69,6 +100,14 @@ const swaggerDefinition = {
           segments: {
             type: 'array',
             items: { $ref: '#/components/schemas/LessonItemSegment' },
+          },
+          wordTimings: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/LessonItemWordTiming' },
+          },
+          chunkTimings: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/LessonItemChunkTiming' },
           },
         },
         required: ['text', 'audioUrl', 'segments'],

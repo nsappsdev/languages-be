@@ -27,6 +27,7 @@ const entrySchema = z.object({
   sourceItemId: z.string().trim().min(1).optional().nullable(),
   order: z.number().int().nonnegative().optional(),
   notes: z.string().trim().optional().nullable(),
+  focusText: z.string().trim().optional().nullable(),
   tags: z.array(z.string().trim().min(1)).optional(),
   translations: z.array(translationSchema).optional(),
 });
@@ -74,6 +75,7 @@ const bulkDeleteSchema = z.object({
 });
 
 const ARMENIAN_LANGUAGE_CODES = new Set(['am', 'hy']);
+const FOCUS_WORD_PATTERN = /[A-Za-z0-9]+(?:[’'][A-Za-z0-9]+)?/g;
 
 const learnerStatusSchema = z.object({
   status: z.enum(['NEW', 'LEARNING', 'LEARNED']),
@@ -116,6 +118,41 @@ async function validateSourceItem(lessonId: string, sourceItemId?: string | null
     select: { id: true },
   });
   return Boolean(item);
+}
+
+function getDefaultFocusText(englishText: string) {
+  const words = [...englishText.matchAll(FOCUS_WORD_PATTERN)].map((match) => match[0]);
+  return words[words.length - 1] ?? englishText.trim();
+}
+
+function resolveFocusText({
+  englishText,
+  existingFocusText,
+  focusText,
+}: {
+  englishText: string;
+  existingFocusText?: string | null;
+  focusText?: string | null;
+}) {
+  const normalizedEntry = canonicalizeVocabularyText(englishText);
+  const candidate =
+    focusText === undefined
+      ? existingFocusText?.trim() || getDefaultFocusText(englishText)
+      : focusText?.trim() || getDefaultFocusText(englishText);
+  const normalizedFocus = canonicalizeVocabularyText(candidate);
+
+  if (!normalizedFocus || !normalizedEntry.split(/\s+/).includes(normalizedFocus)) {
+    const fallbackText = getDefaultFocusText(englishText);
+    return {
+      focusText: fallbackText,
+      focusNormalizedText: canonicalizeVocabularyText(fallbackText) || normalizedEntry,
+    };
+  }
+
+  return {
+    focusText: candidate,
+    focusNormalizedText: normalizedFocus,
+  };
 }
 
 router.get('/lessons/:lessonId/vocabulary', authenticate, async (req: AuthenticatedRequest, res) => {
@@ -163,12 +200,18 @@ router.post('/lessons/:lessonId/vocabulary', authenticate, async (req: Authentic
   const order = parsed.data.order ?? (await getNextLessonVocabularyOrder(prisma, lesson.id));
 
   try {
+    const focus = resolveFocusText({
+      englishText: parsed.data.englishText,
+      focusText: parsed.data.focusText,
+    });
     const entry = await prisma.lessonVocabularyEntry.create({
       data: {
         lessonId: lesson.id,
         sourceItemId: parsed.data.sourceItemId || null,
         englishText: parsed.data.englishText.trim(),
         normalizedText,
+        focusText: focus.focusText,
+        focusNormalizedText: focus.focusNormalizedText,
         kind: parsed.data.kind ?? autoDetectVocabularyKind(parsed.data.englishText),
         order,
         notes: parsed.data.notes || null,
@@ -233,6 +276,11 @@ router.post(
               .map((mark) => getTimingMarkForVocabulary(mark))
               .filter((mark): mark is { text: string; normalizedText: string | null } => mark !== null)
           : [],
+        chunkTimings: Array.isArray(item.chunkTimings)
+          ? item.chunkTimings
+              .map((mark) => getTimingMarkForVocabulary(mark))
+              .filter((mark): mark is { text: string; normalizedText: string | null } => mark !== null)
+          : [],
       })),
     );
 
@@ -270,12 +318,19 @@ router.patch(
     }
 
     try {
+      const focus = resolveFocusText({
+        englishText,
+        existingFocusText: existing.focusText,
+        focusText: parsed.data.focusText,
+      });
       const updated = await prisma.$transaction(async (tx) => {
         const entry = await tx.lessonVocabularyEntry.update({
           where: { id: existing.id },
           data: {
             englishText,
             normalizedText,
+            focusText: focus.focusText,
+            focusNormalizedText: focus.focusNormalizedText,
             kind: parsed.data.kind ?? existing.kind,
             order: parsed.data.order ?? existing.order,
             sourceItemId:

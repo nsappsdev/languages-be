@@ -35,6 +35,10 @@ export type LessonVocabularySourceItem = {
     text: string;
     normalizedText?: string | null;
   }>;
+  chunkTimings?: Array<{
+    text: string;
+    normalizedText?: string | null;
+  }>;
 };
 
 export interface AutoCreateLessonVocabularyResult {
@@ -105,6 +109,8 @@ export function extractLessonVocabularyCandidates(items: LessonVocabularySourceI
     string,
     {
       englishText: string;
+      focusText: string;
+      focusNormalizedText: string;
       kind: VocabularyKind;
       sourceItemId: string | null;
     }
@@ -114,6 +120,7 @@ export function extractLessonVocabularyCandidates(items: LessonVocabularySourceI
     if (!normalizedText || candidates.has(normalizedText)) return;
     candidates.set(normalizedText, {
       englishText: englishText.trim(),
+      ...getDefaultVocabularyFocus(englishText),
       kind: autoDetectVocabularyKind(englishText),
       sourceItemId,
     });
@@ -121,6 +128,11 @@ export function extractLessonVocabularyCandidates(items: LessonVocabularySourceI
 
   for (const item of items) {
     const sourceItemId = item.id ?? null;
+
+    for (const mark of item.chunkTimings ?? []) {
+      const text = normalizeTimingVocabularyText(mark.text || mark.normalizedText || '');
+      addCandidate(text, sourceItemId);
+    }
 
     for (const mark of item.wordTimings ?? []) {
       const text = normalizeTimingVocabularyText(mark.text || mark.normalizedText || '');
@@ -158,6 +170,8 @@ export async function createLessonVocabularyEntriesFromTimingMarks(
         sourceItemId: candidate.sourceItemId,
         englishText: candidate.englishText,
         normalizedText,
+        focusText: candidate.focusText,
+        focusNormalizedText: candidate.focusNormalizedText,
         kind: candidate.kind,
         order: nextOrder,
         tags: [],
@@ -172,6 +186,15 @@ export async function createLessonVocabularyEntriesFromTimingMarks(
     candidates: candidates.size,
     created,
     skipped: candidates.size - created,
+  };
+}
+
+function getDefaultVocabularyFocus(englishText: string) {
+  const words = [...englishText.matchAll(TOKEN_PATTERN)].map((match) => match[0]);
+  const focusText = words[words.length - 1] ?? englishText.trim();
+  return {
+    focusText,
+    focusNormalizedText: canonicalizeVocabularyText(focusText),
   };
 }
 

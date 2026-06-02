@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { generateLessonTimingsFromTranscript } from '../lessonTimingAlignment';
+import {
+  buildHeuristicLogicalChunkTimings,
+  buildLogicalChunkTimings,
+  generateLessonTimingsFromTranscript,
+} from '../lessonTimingAlignment';
 
 test('generates word and sentence timings from aligned transcript words', () => {
   const timings = generateLessonTimingsFromTranscript({
@@ -35,6 +39,13 @@ test('generates word and sentence timings from aligned transcript words', () => 
     { id: 'sentence-1', text: 'Hello world.', startMs: 100, endMs: 900 },
     { id: 'sentence-2', text: 'Hello again!', startMs: 1200, endMs: 2000 },
   ]);
+  assert.deepEqual(
+    timings.chunkTimings.map((mark) => [mark.id, mark.normalizedText, mark.wordMarkIds]),
+    [
+      ['chunk-1', 'hello world', ['word-1', 'word-2']],
+      ['chunk-2', 'hello again', ['word-3', 'word-4']],
+    ],
+  );
 });
 
 test('preserves alignment order when repeated words appear', () => {
@@ -57,6 +68,76 @@ test('preserves alignment order when repeated words appear', () => {
       ['the', 1050],
       ['line', 1200],
     ],
+  );
+});
+
+test('builds logical chunk timings from contiguous suggested word marks', () => {
+  const wordTimings = [
+    { id: 'word-1', text: 'in', normalizedText: 'in', startMs: 100, endMs: 180, order: 0 },
+    { id: 'word-2', text: 'the', normalizedText: 'the', startMs: 190, endMs: 260, order: 1 },
+    { id: 'word-3', text: 'fall', normalizedText: 'fall', startMs: 270, endMs: 500, order: 2 },
+  ];
+
+  assert.deepEqual(
+    buildLogicalChunkTimings({
+      suggestedChunks: [{ text: 'in the fall', wordMarkIds: ['word-1', 'word-2', 'word-3'] }],
+      wordTimings,
+    }),
+    [
+      {
+        id: 'chunk-1',
+        text: 'in the fall',
+        normalizedText: 'in the fall',
+        startMs: 100,
+        endMs: 500,
+        wordMarkIds: ['word-1', 'word-2', 'word-3'],
+        order: 0,
+      },
+    ],
+  );
+});
+
+test('builds local logical chunks for short prepositional phrases', () => {
+  const wordTimings = [
+    { id: 'word-1', text: 'we', normalizedText: 'we', startMs: 0, endMs: 100, order: 0 },
+    { id: 'word-2', text: 'met', normalizedText: 'met', startMs: 110, endMs: 220, order: 1 },
+    { id: 'word-3', text: 'in', normalizedText: 'in', startMs: 230, endMs: 300, order: 2 },
+    { id: 'word-4', text: 'the', normalizedText: 'the', startMs: 310, endMs: 370, order: 3 },
+    { id: 'word-5', text: 'fall', normalizedText: 'fall', startMs: 380, endMs: 550, order: 4 },
+  ];
+
+  assert.deepEqual(
+    buildHeuristicLogicalChunkTimings(wordTimings).map((chunk) => [
+      chunk.text,
+      chunk.wordMarkIds,
+      chunk.startMs,
+      chunk.endMs,
+    ]),
+    [
+      ['we', ['word-1'], 0, 100],
+      ['met', ['word-2'], 110, 220],
+      ['in the fall', ['word-3', 'word-4', 'word-5'], 230, 550],
+    ],
+  );
+});
+
+test('ignores malformed logical chunks with non-contiguous or repeated word marks', () => {
+  const wordTimings = [
+    { id: 'word-1', text: 'one', normalizedText: 'one', startMs: 0, endMs: 100, order: 0 },
+    { id: 'word-2', text: 'two', normalizedText: 'two', startMs: 110, endMs: 200, order: 1 },
+    { id: 'word-3', text: 'three', normalizedText: 'three', startMs: 210, endMs: 300, order: 2 },
+  ];
+
+  assert.deepEqual(
+    buildLogicalChunkTimings({
+      suggestedChunks: [
+        { text: 'one three', wordMarkIds: ['word-1', 'word-3'] },
+        { text: 'one two', wordMarkIds: ['word-1', 'word-2'] },
+        { text: 'two three', wordMarkIds: ['word-2', 'word-3'] },
+      ],
+      wordTimings,
+    }).map((chunk) => chunk.text),
+    ['one two'],
   );
 });
 

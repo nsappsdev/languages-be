@@ -4,8 +4,13 @@ import { z } from 'zod';
 import { authenticate, AuthenticatedRequest } from '../middleware/authenticate';
 import { prisma } from '../lib/prisma';
 import { resolveStoredAudioPath } from '../lib/audioStorage';
-import { generateLessonTimingsFromTranscript } from '../lib/lessonTimingAlignment';
+import {
+  buildHeuristicLogicalChunkTimings,
+  buildLogicalChunkTimings,
+  generateLessonTimingsFromTranscript,
+} from '../lib/lessonTimingAlignment';
 import { transcribeAudioWithWordTimestamps } from '../lib/openaiTranscription';
+import { suggestLogicalTimingChunks } from '../lib/openaiTimingChunks';
 import {
   buildLessonVocabularyPayload,
   canonicalizeVocabularyText,
@@ -66,6 +71,21 @@ const sentenceTimingSchema = z
     path: ['endMs'],
   });
 
+const chunkTimingSchema = z
+  .object({
+    id: z.string().min(1).optional(),
+    text: z.string().trim().min(1),
+    normalizedText: z.string().trim().min(1).optional(),
+    startMs: z.number().int().min(0),
+    endMs: z.number().int().min(1),
+    wordMarkIds: z.array(z.string().min(1)).default([]),
+    order: z.number().int().nonnegative().optional(),
+  })
+  .refine((mark) => mark.endMs > mark.startMs, {
+    message: 'Chunk timing endMs must be greater than startMs',
+    path: ['endMs'],
+  });
+
 const itemBaseObjectSchema = z.object({
   id: z.string().min(1).optional(),
   text: z.string().min(1),
@@ -74,25 +94,37 @@ const itemBaseObjectSchema = z.object({
   segments: z.array(segmentSchema).min(1),
   wordTimings: z.array(wordTimingSchema).default([]),
   sentenceTimings: z.array(sentenceTimingSchema).default([]),
+  chunkTimings: z.array(chunkTimingSchema).default([]),
 });
 
-const refineLessonItemTiming = (item: z.infer<typeof itemBaseObjectSchema>, ctx: z.RefinementCtx) => {
-    validateTimingMarks('wordTimings', item.wordTimings, item.segments, ctx);
-    validateTimingMarks('sentenceTimings', item.sentenceTimings, item.segments, ctx);
+const refineLessonItemTiming = (
+  item: z.infer<typeof itemBaseObjectSchema>,
+  ctx: z.RefinementCtx,
+) => {
+  validateTimingMarks('wordTimings', item.wordTimings, item.segments, ctx);
+  validateTimingMarks('sentenceTimings', item.sentenceTimings, item.segments, ctx);
+  validateTimingMarks('chunkTimings', item.chunkTimings, item.segments, ctx);
 
-    const wordTimingIds = new Set(item.wordTimings.map((mark) => mark.id).filter(Boolean));
-    item.sentenceTimings.forEach((sentence, sentenceIndex) => {
-      sentence.wordMarkIds.forEach((wordMarkId, wordIndex) => {
+  const wordTimingIds = new Set(item.wordTimings.map((mark) => mark.id).filter(Boolean));
+  const validateWordMarkIds = (
+    fieldName: 'sentenceTimings' | 'chunkTimings',
+    timings: Array<{ wordMarkIds: string[] }>,
+  ) => {
+    timings.forEach((timing, timingIndex) => {
+      timing.wordMarkIds.forEach((wordMarkId, wordIndex) => {
         if (!wordTimingIds.has(wordMarkId)) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
-            path: ['sentenceTimings', sentenceIndex, 'wordMarkIds', wordIndex],
+            path: [fieldName, timingIndex, 'wordMarkIds', wordIndex],
             message: `Unknown word timing id: ${wordMarkId}`,
           });
         }
       });
     });
   };
+  validateWordMarkIds('sentenceTimings', item.sentenceTimings);
+  validateWordMarkIds('chunkTimings', item.chunkTimings);
+};
 
 const itemBaseSchema = itemBaseObjectSchema.superRefine(refineLessonItemTiming);
 
@@ -110,8 +142,51 @@ const generateTimingsSchema = z.object({
   text: z.string().trim().min(1).optional(),
 });
 
+const updateSegmentTimingsSchema = z
+  .object({
+    segment: segmentSchema,
+    wordTimings: z.array(wordTimingSchema).default([]),
+    chunkTimings: z.array(chunkTimingSchema).default([]),
+  })
+  .superRefine((payload, ctx) => {
+    validateTimingMarks('wordTimings', payload.wordTimings, [payload.segment], ctx);
+    validateTimingMarks('chunkTimings', payload.chunkTimings, [payload.segment], ctx);
+
+    payload.wordTimings.forEach((mark, index) => {
+      if (!isTimingInsideSegment(mark, payload.segment)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['wordTimings', index, 'startMs'],
+          message: 'Word timing must start inside the segment being saved',
+        });
+      }
+    });
+    payload.chunkTimings.forEach((mark, index) => {
+      if (!isTimingInsideSegment(mark, payload.segment)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['chunkTimings', index, 'startMs'],
+          message: 'Chunk timing must start inside the segment being saved',
+        });
+      }
+    });
+
+    const wordTimingIds = new Set(payload.wordTimings.map((mark) => mark.id).filter(Boolean));
+    payload.chunkTimings.forEach((timing, timingIndex) => {
+      timing.wordMarkIds.forEach((wordMarkId, wordIndex) => {
+        if (!wordTimingIds.has(wordMarkId)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['chunkTimings', timingIndex, 'wordMarkIds', wordIndex],
+            message: `Unknown word timing id: ${wordMarkId}`,
+          });
+        }
+      });
+    });
+  });
+
 function validateTimingMarks(
-  fieldName: 'wordTimings' | 'sentenceTimings',
+  fieldName: 'wordTimings' | 'sentenceTimings' | 'chunkTimings',
   marks: Array<{ startMs: number; endMs: number; order?: number }>,
   segments: Array<{ endMs: number }>,
   ctx: z.RefinementCtx,
@@ -165,7 +240,23 @@ function normalizeLessonItemPayload(item: ParsedLessonItem, index: number) {
       wordMarkIds: mark.wordMarkIds,
       order: mark.order ?? markIndex,
     })),
+    chunkTimings: item.chunkTimings.map((mark, markIndex) => ({
+      id: mark.id ?? `chunk-${markIndex + 1}`,
+      text: mark.text,
+      normalizedText: mark.normalizedText ?? canonicalizeVocabularyText(mark.text),
+      startMs: mark.startMs,
+      endMs: mark.endMs,
+      wordMarkIds: mark.wordMarkIds,
+      order: mark.order ?? markIndex,
+    })),
   };
+}
+
+function isTimingInsideSegment(
+  mark: { startMs: number; endMs: number },
+  segment: { startMs: number; endMs: number },
+) {
+  return mark.startMs >= segment.startMs && mark.startMs < segment.endMs;
 }
 
 const requireAdmin = (req: AuthenticatedRequest, res: Response) => {
@@ -255,6 +346,7 @@ router.post('/lessons', authenticate, async (req: AuthenticatedRequest, res) => 
               segments: item.segments,
               wordTimings: item.wordTimings,
               sentenceTimings: item.sentenceTimings,
+              chunkTimings: item.chunkTimings,
             })),
           }
         : undefined,
@@ -327,6 +419,7 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
             segments: item.segments,
             wordTimings: item.wordTimings,
             sentenceTimings: item.sentenceTimings,
+            chunkTimings: item.chunkTimings,
           })),
         });
       }
@@ -360,6 +453,139 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
     },
   });
 });
+
+router.patch(
+  '/lessons/:lessonId/items/:itemId/segments/:segmentId/timings',
+  authenticate,
+  async (req: AuthenticatedRequest, res) => {
+    if (!requireAdmin(req, res)) return;
+
+    const parsed = updateSegmentTimingsSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
+    }
+
+    const item = await prisma.lessonItem.findFirst({
+      where: {
+        id: req.params.itemId,
+        lessonId: req.params.lessonId,
+      },
+    });
+    if (!item) {
+      return res.status(404).json({ message: 'Lesson item not found' });
+    }
+
+    const existingSegments = Array.isArray(item.segments) ? item.segments : [];
+    const segmentIndex = existingSegments.findIndex(
+      (segment) =>
+        typeof segment === 'object' &&
+        segment !== null &&
+        'id' in segment &&
+        segment.id === req.params.segmentId,
+    );
+    if (segmentIndex === -1) {
+      return res.status(404).json({ message: 'Lesson segment not found' });
+    }
+
+    const existingSegment = existingSegments[segmentIndex] as z.infer<typeof segmentSchema>;
+    const { segment, wordTimings, chunkTimings } = parsed.data;
+    const normalizedWords = wordTimings.map((mark, markIndex) => ({
+      id: mark.id ?? `word-${Date.now()}-${markIndex + 1}`,
+      text: mark.text,
+      normalizedText: mark.normalizedText ?? canonicalizeVocabularyText(mark.text),
+      startMs: mark.startMs,
+      endMs: mark.endMs,
+      order: mark.order ?? markIndex,
+    }));
+    const normalizedChunks = chunkTimings.map((mark, markIndex) => ({
+      id: mark.id ?? `chunk-${Date.now()}-${markIndex + 1}`,
+      text: mark.text,
+      normalizedText: mark.normalizedText ?? canonicalizeVocabularyText(mark.text),
+      startMs: mark.startMs,
+      endMs: mark.endMs,
+      wordMarkIds: mark.wordMarkIds,
+      order: mark.order ?? markIndex,
+    }));
+    const segmentSentenceTiming = normalizedWords.length
+      ? [
+          {
+            id: `sentence-${segment.id}`,
+            text: segment.text,
+            startMs: segment.startMs,
+            endMs: segment.endMs,
+            wordMarkIds: normalizedWords.map((word) => word.id),
+            order: 0,
+          },
+        ]
+      : [];
+
+    const nextSegments = existingSegments.map((entry, index) =>
+      index === segmentIndex ? segment : entry,
+    );
+    const existingWordTimings = Array.isArray(item.wordTimings) ? item.wordTimings : [];
+    const existingSentenceTimings = Array.isArray(item.sentenceTimings)
+      ? item.sentenceTimings
+      : [];
+    const existingChunkTimings = Array.isArray(item.chunkTimings) ? item.chunkTimings : [];
+    const nextWordTimings = [
+      ...existingWordTimings.filter(
+        (mark) =>
+          typeof mark === 'object' &&
+          mark !== null &&
+          !isTimingInsideSegment(mark as { startMs: number; endMs: number }, existingSegment),
+      ),
+      ...normalizedWords,
+    ]
+      .sort((left, right) => {
+        const leftTiming = left as { startMs: number; endMs: number };
+        const rightTiming = right as { startMs: number; endMs: number };
+        return leftTiming.startMs - rightTiming.startMs || leftTiming.endMs - rightTiming.endMs;
+      })
+      .map((mark, index) => ({ ...(mark as object), order: index }));
+    const nextSentenceTimings = [
+      ...existingSentenceTimings.filter(
+        (mark) =>
+          typeof mark === 'object' &&
+          mark !== null &&
+          !isTimingInsideSegment(mark as { startMs: number; endMs: number }, existingSegment),
+      ),
+      ...segmentSentenceTiming,
+    ]
+      .sort((left, right) => {
+        const leftTiming = left as { startMs: number; endMs: number };
+        const rightTiming = right as { startMs: number; endMs: number };
+        return leftTiming.startMs - rightTiming.startMs || leftTiming.endMs - rightTiming.endMs;
+      })
+      .map((mark, index) => ({ ...(mark as object), order: index }));
+    const nextChunkTimings = [
+      ...existingChunkTimings.filter(
+        (mark) =>
+          typeof mark === 'object' &&
+          mark !== null &&
+          !isTimingInsideSegment(mark as { startMs: number; endMs: number }, existingSegment),
+      ),
+      ...normalizedChunks,
+    ]
+      .sort((left, right) => {
+        const leftTiming = left as { startMs: number; endMs: number };
+        const rightTiming = right as { startMs: number; endMs: number };
+        return leftTiming.startMs - rightTiming.startMs || leftTiming.endMs - rightTiming.endMs;
+      })
+      .map((mark, index) => ({ ...(mark as object), order: index }));
+
+    const updated = await prisma.lessonItem.update({
+      where: { id: item.id },
+      data: {
+        segments: nextSegments,
+        wordTimings: nextWordTimings,
+        sentenceTimings: nextSentenceTimings,
+        chunkTimings: nextChunkTimings,
+      },
+    });
+
+    return res.json({ item: updated });
+  },
+);
 
 router.post(
   '/lessons/:lessonId/items/:itemId/transcribe-timings',
@@ -403,6 +629,27 @@ router.post(
         transcriptText: transcription.text,
         transcriptWords: transcription.words,
       });
+      try {
+        const suggestedChunks = await suggestLogicalTimingChunks({
+          lessonText,
+          wordTimings: timings.wordTimings,
+        });
+        const chunkTimings = buildLogicalChunkTimings({
+          suggestedChunks,
+          wordTimings: timings.wordTimings,
+        });
+        if (chunkTimings.some((chunk) => chunk.wordMarkIds.length > 1)) {
+          timings.chunkTimings = chunkTimings;
+        } else {
+          timings.chunkTimings = buildHeuristicLogicalChunkTimings(timings.wordTimings);
+          timings.warnings.push('OpenAI returned only single-word chunks; local logical chunks were generated.');
+        }
+      } catch (chunkError) {
+        const chunkMessage =
+          chunkError instanceof Error ? chunkError.message : 'Failed to generate logical timing chunks';
+        timings.chunkTimings = buildHeuristicLogicalChunkTimings(timings.wordTimings);
+        timings.warnings.push(`OpenAI logical chunking skipped; local logical chunks were generated: ${chunkMessage}`);
+      }
 
       if (!timings.segments.length || !timings.wordTimings.length) {
         return res.status(422).json({
@@ -476,6 +723,7 @@ router.post('/lessons/:lessonId/items', authenticate, async (req: AuthenticatedR
       segments: normalizedItem.segments,
       wordTimings: normalizedItem.wordTimings,
       sentenceTimings: normalizedItem.sentenceTimings,
+      chunkTimings: normalizedItem.chunkTimings,
     },
   });
 
