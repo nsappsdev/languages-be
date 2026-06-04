@@ -35,10 +35,6 @@ export type LessonVocabularySourceItem = {
     text: string;
     normalizedText?: string | null;
   }>;
-  chunkTimings?: Array<{
-    text: string;
-    normalizedText?: string | null;
-  }>;
 };
 
 export interface AutoCreateLessonVocabularyResult {
@@ -118,21 +114,17 @@ export function extractLessonVocabularyCandidates(items: LessonVocabularySourceI
   const addCandidate = (englishText: string, sourceItemId: string | null) => {
     const normalizedText = canonicalizeVocabularyText(englishText);
     if (!normalizedText || candidates.has(normalizedText)) return;
+    if (normalizedText.split(/\s+/).filter(Boolean).length !== 1) return;
     candidates.set(normalizedText, {
       englishText: englishText.trim(),
       ...getDefaultVocabularyFocus(englishText),
-      kind: autoDetectVocabularyKind(englishText),
+      kind: 'WORD',
       sourceItemId,
     });
   };
 
   for (const item of items) {
     const sourceItemId = item.id ?? null;
-
-    for (const mark of item.chunkTimings ?? []) {
-      const text = normalizeTimingVocabularyText(mark.text || mark.normalizedText || '');
-      addCandidate(text, sourceItemId);
-    }
 
     for (const mark of item.wordTimings ?? []) {
       const text = normalizeTimingVocabularyText(mark.text || mark.normalizedText || '');

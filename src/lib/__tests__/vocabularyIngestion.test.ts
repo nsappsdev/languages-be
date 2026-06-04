@@ -62,35 +62,32 @@ describe('lesson vocabulary ingestion', () => {
     assert.equal(word?.matchCount, 1);
   });
 
-  it('extracts editable vocabulary candidates from phrase timings only', () => {
+  it('extracts editable vocabulary candidates from saved word timings only', () => {
     const candidates = extractLessonVocabularyCandidates([
       {
         id: 'item-1',
         text: 'Robert Iger watched soap operas in the fall.',
-        wordTimings: [{ text: 'soap operas' }, { text: 'in the fall' }],
+        wordTimings: [{ text: 'soap' }, { text: 'operas' }, { text: 'fall' }],
       },
     ]);
 
-    assert.equal(candidates.get('soap operas')?.kind, 'PHRASE');
-    assert.equal(candidates.get('in the fall')?.sourceItemId, 'item-1');
+    assert.equal(candidates.get('soap')?.kind, 'WORD');
+    assert.equal(candidates.get('fall')?.sourceItemId, 'item-1');
     assert.equal(candidates.has('robert'), false);
-    assert.equal(candidates.has('soap'), false);
-    assert.equal(candidates.has('fall'), false);
   });
 
-  it('extracts editable vocabulary candidates from logical chunks', () => {
+  it('ignores logical chunks and multi-word timing marks', () => {
     const candidates = extractLessonVocabularyCandidates([
       {
         id: 'item-1',
         text: 'Robert Iger watched soap operas in the fall.',
-        chunkTimings: [{ text: 'in the fall' }],
-        wordTimings: [{ text: 'fall' }],
+        wordTimings: [{ text: 'fall' }, { text: 'Robert Iger' }, { text: 'soap operas' }],
       },
     ]);
 
-    assert.equal(candidates.get('in the fall')?.kind, 'PHRASE');
-    assert.equal(candidates.get('in the fall')?.focusNormalizedText, 'fall');
     assert.equal(candidates.get('fall')?.kind, 'WORD');
+    assert.equal(candidates.has('robert iger'), false);
+    assert.equal(candidates.has('soap operas'), false);
   });
 
   it('can extract timing-only terms without sentence punctuation noise', () => {
@@ -102,8 +99,8 @@ describe('lesson vocabulary ingestion', () => {
       },
     ]);
 
-    assert.equal(candidates.size, 2);
+    assert.equal(candidates.size, 1);
     assert.equal(candidates.get('romance')?.kind, 'WORD');
-    assert.equal(candidates.get('robert iger')?.kind, 'PHRASE');
+    assert.equal(candidates.has('robert iger'), false);
   });
 });

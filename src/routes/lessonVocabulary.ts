@@ -276,11 +276,6 @@ router.post(
               .map((mark) => getTimingMarkForVocabulary(mark))
               .filter((mark): mark is { text: string; normalizedText: string | null } => mark !== null)
           : [],
-        chunkTimings: Array.isArray(item.chunkTimings)
-          ? item.chunkTimings
-              .map((mark) => getTimingMarkForVocabulary(mark))
-              .filter((mark): mark is { text: string; normalizedText: string | null } => mark !== null)
-          : [],
       })),
     );
 
