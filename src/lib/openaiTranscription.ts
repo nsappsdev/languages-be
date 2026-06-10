@@ -6,10 +6,12 @@ import { TranscriptWord } from './lessonTimingAlignment';
 export interface OpenAITranscriptionResult {
   text: string;
   words: TranscriptWord[];
+  audioDurationSeconds?: number;
 }
 
 interface OpenAIVerboseTranscriptionResponse {
   text?: string;
+  duration?: number;
   words?: Array<{
     word?: string;
     start?: number;
@@ -71,6 +73,10 @@ export async function transcribeAudioWithWordTimestamps({
 
   return {
     text: payload.text ?? '',
+    audioDurationSeconds:
+      typeof payload.duration === 'number' && Number.isFinite(payload.duration)
+        ? payload.duration
+        : undefined,
     words: (payload.words ?? [])
       .filter(
         (word): word is { word: string; start: number; end: number } =>

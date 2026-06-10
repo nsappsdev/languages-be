@@ -2,8 +2,6 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  buildHeuristicLogicalChunkTimings,
-  buildLogicalChunkTimings,
   generateLessonTimingsFromTranscript,
 } from '../lessonTimingAlignment';
 
@@ -39,13 +37,7 @@ test('generates word and sentence timings from aligned transcript words', () => 
     { id: 'sentence-1', text: 'Hello world.', startMs: 100, endMs: 900 },
     { id: 'sentence-2', text: 'Hello again!', startMs: 1200, endMs: 2000 },
   ]);
-  assert.deepEqual(
-    timings.chunkTimings.map((mark) => [mark.id, mark.normalizedText, mark.wordMarkIds]),
-    [
-      ['chunk-1', 'hello world', ['word-1', 'word-2']],
-      ['chunk-2', 'hello again', ['word-3', 'word-4']],
-    ],
-  );
+  assert.deepEqual(timings.chunkTimings, []);
 });
 
 test('preserves alignment order when repeated words appear', () => {
@@ -71,73 +63,74 @@ test('preserves alignment order when repeated words appear', () => {
   );
 });
 
-test('builds logical chunk timings from contiguous suggested word marks', () => {
-  const wordTimings = [
-    { id: 'word-1', text: 'in', normalizedText: 'in', startMs: 100, endMs: 180, order: 0 },
-    { id: 'word-2', text: 'the', normalizedText: 'the', startMs: 190, endMs: 260, order: 1 },
-    { id: 'word-3', text: 'fall', normalizedText: 'fall', startMs: 270, endMs: 500, order: 2 },
-  ];
+test('preserves provider timestamps instead of forcing the first word to zero', () => {
+  const timings = generateLessonTimingsFromTranscript({
+    lessonText: 'Everyone has insecurities. When you speak.',
+    transcriptText: 'Everyone has insecurities. When you speak.',
+    transcriptWords: [
+      { word: 'Everyone', start: 9.9, end: 10.1 },
+      { word: 'has', start: 10.15, end: 10.3 },
+      { word: 'insecurities', start: 10.35, end: 10.62 },
+      { word: 'When', start: 10.8, end: 11.0 },
+      { word: 'you', start: 11.05, end: 11.15 },
+      { word: 'speak', start: 11.2, end: 11.5 },
+    ],
+  });
 
   assert.deepEqual(
-    buildLogicalChunkTimings({
-      suggestedChunks: [{ text: 'in the fall', wordMarkIds: ['word-1', 'word-2', 'word-3'] }],
-      wordTimings,
-    }),
+    timings.wordTimings.map((mark) => [mark.normalizedText, mark.startMs, mark.endMs]),
     [
-      {
-        id: 'chunk-1',
-        text: 'in the fall',
-        normalizedText: 'in the fall',
-        startMs: 100,
-        endMs: 500,
-        wordMarkIds: ['word-1', 'word-2', 'word-3'],
-        order: 0,
-      },
+      ['everyone', 9900, 10100],
+      ['has', 10150, 10300],
+      ['insecurities', 10350, 10620],
+      ['when', 10800, 11000],
+      ['you', 11050, 11150],
+      ['speak', 11200, 11500],
+    ],
+  );
+  assert.deepEqual(
+    timings.segments.map((segment) => [segment.startMs, segment.endMs]),
+    [
+      [9900, 10620],
+      [10800, 11500],
     ],
   );
 });
 
-test('builds local logical chunks for short prepositional phrases', () => {
-  const wordTimings = [
-    { id: 'word-1', text: 'we', normalizedText: 'we', startMs: 0, endMs: 100, order: 0 },
-    { id: 'word-2', text: 'met', normalizedText: 'met', startMs: 110, endMs: 220, order: 1 },
-    { id: 'word-3', text: 'in', normalizedText: 'in', startMs: 230, endMs: 300, order: 2 },
-    { id: 'word-4', text: 'the', normalizedText: 'the', startMs: 310, endMs: 370, order: 3 },
-    { id: 'word-5', text: 'fall', normalizedText: 'fall', startMs: 380, endMs: 550, order: 4 },
-  ];
+test('repairs collapsed provider timestamps using the audio duration', () => {
+  const timings = generateLessonTimingsFromTranscript({
+    lessonText: 'Everyone has insecurities. When you speak.',
+    transcriptText: 'Everyone has insecurities. When you speak.',
+    transcriptWords: [
+      { word: 'Everyone', start: 0, end: 0.24 },
+      { word: 'has', start: 0, end: 0.24 },
+      { word: 'insecurities', start: 0, end: 0.24 },
+      { word: 'When', start: 0, end: 0.24 },
+      { word: 'you', start: 0, end: 0.24 },
+      { word: 'speak', start: 0, end: 0.24 },
+    ],
+    audioDurationSeconds: 12,
+  });
 
+  assert.equal(timings.wordTimings[0].startMs, 0);
+  assert.equal(timings.wordTimings.at(-1)?.endMs, 12000);
+  assert.ok(
+    timings.wordTimings.every(
+      (mark, index) =>
+        index === 0 || mark.startMs >= timings.wordTimings[index - 1].endMs,
+    ),
+  );
   assert.deepEqual(
-    buildHeuristicLogicalChunkTimings(wordTimings).map((chunk) => [
-      chunk.text,
-      chunk.wordMarkIds,
-      chunk.startMs,
-      chunk.endMs,
-    ]),
+    timings.sentenceTimings.map((mark) => mark.wordMarkIds),
     [
-      ['we', ['word-1'], 0, 100],
-      ['met', ['word-2'], 110, 220],
-      ['in the fall', ['word-3', 'word-4', 'word-5'], 230, 550],
+      ['word-1', 'word-2', 'word-3'],
+      ['word-4', 'word-5', 'word-6'],
     ],
   );
-});
-
-test('ignores malformed logical chunks with non-contiguous or repeated word marks', () => {
-  const wordTimings = [
-    { id: 'word-1', text: 'one', normalizedText: 'one', startMs: 0, endMs: 100, order: 0 },
-    { id: 'word-2', text: 'two', normalizedText: 'two', startMs: 110, endMs: 200, order: 1 },
-    { id: 'word-3', text: 'three', normalizedText: 'three', startMs: 210, endMs: 300, order: 2 },
-  ];
-
-  assert.deepEqual(
-    buildLogicalChunkTimings({
-      suggestedChunks: [
-        { text: 'one three', wordMarkIds: ['word-1', 'word-3'] },
-        { text: 'one two', wordMarkIds: ['word-1', 'word-2'] },
-        { text: 'two three', wordMarkIds: ['word-2', 'word-3'] },
-      ],
-      wordTimings,
-    }).map((chunk) => chunk.text),
-    ['one two'],
+  assert.ok(
+    timings.warnings.includes(
+      'AI returned collapsed word timestamps, so word ranges were estimated across the audio duration.',
+    ),
   );
 });
 

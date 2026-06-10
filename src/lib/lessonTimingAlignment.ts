@@ -50,11 +50,6 @@ export interface GeneratedLessonTimings {
   transcriptText: string;
 }
 
-export interface SuggestedTimingChunk {
-  text: string;
-  wordMarkIds: string[];
-}
-
 interface TextWord {
   text: string;
   normalizedText: string;
@@ -76,21 +71,44 @@ export function generateLessonTimingsFromTranscript({
   lessonText,
   transcriptText,
   transcriptWords,
+  audioDurationSeconds,
 }: {
   lessonText: string;
   transcriptText: string;
   transcriptWords: TranscriptWord[];
+  audioDurationSeconds?: number;
 }): GeneratedLessonTimings {
   const lessonWords = extractTextWords(lessonText);
   const sentences = extractTextSentences(lessonText);
-  const transcriptWordsWithText = transcriptWords
+  const warnings: string[] = [];
+  let transcriptWordsWithText = transcriptWords
     .map((word) => ({
       ...word,
       normalizedText: canonicalizeVocabularyText(word.word),
     }))
     .filter((word) => word.normalizedText.length > 0 && word.end > word.start);
 
-  const warnings: string[] = [];
+  if (hasCollapsedTranscriptTimeline(transcriptWordsWithText)) {
+    if (
+      audioDurationSeconds !== undefined &&
+      Number.isFinite(audioDurationSeconds) &&
+      audioDurationSeconds > 0
+    ) {
+      transcriptWordsWithText = estimateTranscriptTimeline(
+        transcriptWordsWithText,
+        audioDurationSeconds,
+      );
+      warnings.push(
+        'AI returned collapsed word timestamps, so word ranges were estimated across the audio duration.',
+      );
+    } else {
+      transcriptWordsWithText = [];
+      warnings.push(
+        'AI returned collapsed word timestamps and no audio duration was available to repair them.',
+      );
+    }
+  }
+
   if (!lessonWords.length) {
     warnings.push('Lesson text does not contain any English words to align.');
   }
@@ -181,14 +199,6 @@ export function generateLessonTimingsFromTranscript({
     startMs: sentence.startMs,
     endMs: sentence.endMs,
   }));
-  const chunkTimings = buildLogicalChunkTimings({
-    suggestedChunks: sentenceTimings.map((sentence) => ({
-      text: sentence.text,
-      wordMarkIds: sentence.wordMarkIds,
-    })),
-    wordTimings,
-  });
-
   if (!segments.length && lessonText.trim().length > 0) {
     warnings.push('No sentence timing ranges could be generated.');
   }
@@ -197,112 +207,10 @@ export function generateLessonTimingsFromTranscript({
     segments,
     wordTimings,
     sentenceTimings,
-    chunkTimings,
+    chunkTimings: [],
     warnings: dedupeWarnings(warnings),
     transcriptText,
   };
-}
-
-export function buildLogicalChunkTimings({
-  suggestedChunks,
-  wordTimings,
-}: {
-  suggestedChunks: SuggestedTimingChunk[];
-  wordTimings: LessonWordTiming[];
-}): LessonChunkTiming[] {
-  const wordTimingById = new Map(wordTimings.map((mark) => [mark.id, mark]));
-  const seenWordIds = new Set<string>();
-  const chunks: LessonChunkTiming[] = [];
-
-  for (const suggested of suggestedChunks) {
-    const wordMarkIds = suggested.wordMarkIds.filter((id) => wordTimingById.has(id));
-    if (!wordMarkIds.length || wordMarkIds.some((id) => seenWordIds.has(id))) {
-      continue;
-    }
-
-    const marks = wordMarkIds
-      .map((id) => wordTimingById.get(id))
-      .filter((mark): mark is LessonWordTiming => Boolean(mark))
-      .sort((left, right) => left.order - right.order);
-    if (!marks.length || !areContiguousWordMarks(marks)) {
-      continue;
-    }
-
-    const text = suggested.text.trim() || marks.map((mark) => mark.text).join(' ');
-    const normalizedText = canonicalizeVocabularyText(text);
-    if (!normalizedText) {
-      continue;
-    }
-
-    for (const id of wordMarkIds) {
-      seenWordIds.add(id);
-    }
-    chunks.push({
-      id: `chunk-${chunks.length + 1}`,
-      text,
-      normalizedText,
-      startMs: marks[0].startMs,
-      endMs: marks[marks.length - 1].endMs,
-      wordMarkIds: marks.map((mark) => mark.id),
-      order: chunks.length,
-    });
-  }
-
-  return chunks;
-}
-
-export function buildHeuristicLogicalChunkTimings(
-  wordTimings: LessonWordTiming[],
-): LessonChunkTiming[] {
-  const suggestedChunks: SuggestedTimingChunk[] = [];
-  let index = 0;
-
-  while (index < wordTimings.length) {
-    const current = wordTimings[index];
-    const next = wordTimings[index + 1];
-    const afterNext = wordTimings[index + 2];
-
-    if (isCapitalized(current.text) && next && isCapitalized(next.text)) {
-      suggestedChunks.push({
-        text: [current.text, next.text].join(' '),
-        wordMarkIds: [current.id, next.id],
-      });
-      index += 2;
-      continue;
-    }
-
-    if (isPreposition(current.normalizedText) && next) {
-      const marks = [current];
-      if (isArticleOrDeterminer(next.normalizedText) && afterNext) {
-        marks.push(next, afterNext);
-      } else {
-        marks.push(next);
-      }
-      suggestedChunks.push({
-        text: marks.map((mark) => mark.text).join(' '),
-        wordMarkIds: marks.map((mark) => mark.id),
-      });
-      index += marks.length;
-      continue;
-    }
-
-    if (isArticleOrDeterminer(current.normalizedText) && next) {
-      suggestedChunks.push({
-        text: [current.text, next.text].join(' '),
-        wordMarkIds: [current.id, next.id],
-      });
-      index += 2;
-      continue;
-    }
-
-    suggestedChunks.push({
-      text: current.text,
-      wordMarkIds: [current.id],
-    });
-    index += 1;
-  }
-
-  return buildLogicalChunkTimings({ suggestedChunks, wordTimings });
 }
 
 function extractTextWords(text: string): TextWord[] {
@@ -320,54 +228,6 @@ function extractTextWords(text: string): TextWord[] {
     });
   }
   return result;
-}
-
-function areContiguousWordMarks(marks: LessonWordTiming[]) {
-  for (let index = 1; index < marks.length; index += 1) {
-    if (marks[index].order !== marks[index - 1].order + 1) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function isPreposition(value: string) {
-  return new Set([
-    'about',
-    'above',
-    'after',
-    'against',
-    'around',
-    'at',
-    'before',
-    'behind',
-    'between',
-    'by',
-    'during',
-    'for',
-    'from',
-    'in',
-    'inside',
-    'into',
-    'near',
-    'of',
-    'on',
-    'onto',
-    'over',
-    'through',
-    'to',
-    'under',
-    'with',
-    'without',
-  ]).has(value);
-}
-
-function isArticleOrDeterminer(value: string) {
-  return new Set(['a', 'an', 'the', 'this', 'that', 'these', 'those', 'my', 'your', 'his', 'her', 'our', 'their']).has(value);
-}
-
-function isCapitalized(value: string) {
-  return /^[A-Z][A-Za-z'’]*$/.test(value);
 }
 
 function extractTextSentences(text: string): TextSentence[] {
@@ -556,6 +416,55 @@ function countMissingWords({
 
 function secondsToMilliseconds(value: number) {
   return Math.max(0, Math.round(value * 1000));
+}
+
+function hasCollapsedTranscriptTimeline(
+  words: Array<TranscriptWord & { normalizedText: string }>,
+) {
+  if (words.length < 3) return false;
+
+  let advancingRanges = 0;
+  let repeatedRanges = 0;
+  for (let index = 1; index < words.length; index += 1) {
+    const previous = words[index - 1];
+    const current = words[index];
+    if (current.start > previous.start || current.end > previous.end) {
+      advancingRanges += 1;
+    }
+    if (current.start === previous.start && current.end === previous.end) {
+      repeatedRanges += 1;
+    }
+  }
+
+  const transitions = words.length - 1;
+  return (
+    repeatedRanges >= Math.ceil(transitions / 2) ||
+    advancingRanges < Math.ceil(transitions / 4)
+  );
+}
+
+function estimateTranscriptTimeline(
+  words: Array<TranscriptWord & { normalizedText: string }>,
+  audioDurationSeconds: number,
+) {
+  const durationMs = Math.max(words.length, secondsToMilliseconds(audioDurationSeconds));
+  const weights = words.map((word) => Math.max(2, word.normalizedText.length + 1));
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  let elapsedWeight = 0;
+
+  return words.map((word, index) => {
+    const startMs = Math.round((durationMs * elapsedWeight) / totalWeight);
+    elapsedWeight += weights[index];
+    const endMs =
+      index === words.length - 1
+        ? durationMs
+        : Math.round((durationMs * elapsedWeight) / totalWeight);
+    return {
+      ...word,
+      start: startMs / 1000,
+      end: Math.max(startMs + 1, endMs) / 1000,
+    };
+  });
 }
 
 function dedupeWarnings(warnings: string[]) {

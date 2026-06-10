@@ -5,12 +5,9 @@ import { authenticate, AuthenticatedRequest } from '../middleware/authenticate';
 import { prisma } from '../lib/prisma';
 import { resolveStoredAudioPath } from '../lib/audioStorage';
 import {
-  buildHeuristicLogicalChunkTimings,
-  buildLogicalChunkTimings,
   generateLessonTimingsFromTranscript,
 } from '../lib/lessonTimingAlignment';
 import { transcribeAudioWithWordTimestamps } from '../lib/openaiTranscription';
-import { suggestLogicalTimingChunks } from '../lib/openaiTimingChunks';
 import {
   buildLessonVocabularyPayload,
   canonicalizeVocabularyText,
@@ -628,28 +625,8 @@ router.post(
         lessonText,
         transcriptText: transcription.text,
         transcriptWords: transcription.words,
+        audioDurationSeconds: transcription.audioDurationSeconds,
       });
-      try {
-        const suggestedChunks = await suggestLogicalTimingChunks({
-          lessonText,
-          wordTimings: timings.wordTimings,
-        });
-        const chunkTimings = buildLogicalChunkTimings({
-          suggestedChunks,
-          wordTimings: timings.wordTimings,
-        });
-        if (chunkTimings.some((chunk) => chunk.wordMarkIds.length > 1)) {
-          timings.chunkTimings = chunkTimings;
-        } else {
-          timings.chunkTimings = buildHeuristicLogicalChunkTimings(timings.wordTimings);
-          timings.warnings.push('OpenAI returned only single-word chunks; local logical chunks were generated.');
-        }
-      } catch (chunkError) {
-        const chunkMessage =
-          chunkError instanceof Error ? chunkError.message : 'Failed to generate logical timing chunks';
-        timings.chunkTimings = buildHeuristicLogicalChunkTimings(timings.wordTimings);
-        timings.warnings.push(`OpenAI logical chunking skipped; local logical chunks were generated: ${chunkMessage}`);
-      }
 
       if (!timings.segments.length || !timings.wordTimings.length) {
         return res.status(422).json({
