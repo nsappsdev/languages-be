@@ -1,7 +1,9 @@
+import { Prisma } from '@prisma/client';
 import { Response, Router } from 'express';
 import { z } from 'zod';
 import { translateVocabularyToArmenian } from '../lib/openaiTranslations';
 import { prisma } from '../lib/prisma';
+import { applyVocabularyReviewDecision } from '../lib/vocabularyReview';
 import { authenticate, AuthenticatedRequest } from '../middleware/authenticate';
 import {
   autoDetectVocabularyKind,
@@ -79,6 +81,11 @@ const FOCUS_WORD_PATTERN = /[A-Za-z0-9]+(?:[’'][A-Za-z0-9]+)?/g;
 
 const learnerStatusSchema = z.object({
   status: z.enum(['NEW', 'LEARNING', 'LEARNED']),
+});
+
+const vocabularyReviewDecisionSchema = z.object({
+  decision: z.enum(['AGAIN', 'KNOW']),
+  idempotencyKey: z.string().trim().min(8).max(200),
 });
 
 function requireAdmin(req: AuthenticatedRequest, res: Response) {
@@ -575,6 +582,69 @@ router.post(
   },
 );
 
+router.get('/me/vocabulary/lessons', authenticate, async (req: AuthenticatedRequest, res) => {
+  const user = requireUser(req, res);
+  if (!user) return;
+
+  const rows = await prisma.learnerLessonVocabularyEntry.findMany({
+    where: {
+      userId: user.id,
+      status: { in: ['LEARNING', 'LEARNED'] },
+      lesson: { status: 'PUBLISHED' },
+      entry: {
+        translations: {
+          some: { languageCode: { in: ['am', 'hy'] } },
+        },
+      },
+    },
+    select: {
+      status: true,
+      lesson: {
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          createdAt: true,
+        },
+      },
+    },
+    orderBy: {
+      lesson: {
+        createdAt: 'asc',
+      },
+    },
+  });
+
+  const summaries = new Map<
+    string,
+    {
+      lessonId: string;
+      title: string;
+      description: string | null;
+      activeCount: number;
+      learnedCount: number;
+    }
+  >();
+
+  rows.forEach((row) => {
+    const summary = summaries.get(row.lesson.id) ?? {
+      lessonId: row.lesson.id,
+      title: row.lesson.title,
+      description: row.lesson.description,
+      activeCount: 0,
+      learnedCount: 0,
+    };
+    if (row.status === 'LEARNED') {
+      summary.learnedCount += 1;
+    } else {
+      summary.activeCount += 1;
+    }
+    summaries.set(row.lesson.id, summary);
+  });
+
+  return res.json({ lessons: [...summaries.values()] });
+});
+
 router.get('/me/lessons/:lessonId/vocabulary', authenticate, async (req: AuthenticatedRequest, res) => {
   const user = requireUser(req, res);
   if (!user) return;
@@ -611,6 +681,7 @@ router.get('/me/lessons/:lessonId/vocabulary', authenticate, async (req: Authent
           lessonId: lesson.id,
           entryId: entry.id,
           status: status?.status ?? 'NEW',
+          correctStreak: status?.correctStreak ?? 0,
           rightSwipes: status?.rightSwipes ?? 0,
           leftSwipes: status?.leftSwipes ?? 0,
           lastReviewedAt: status?.lastReviewedAt ?? null,
@@ -621,6 +692,148 @@ router.get('/me/lessons/:lessonId/vocabulary', authenticate, async (req: Authent
     },
   });
 });
+
+router.post(
+  '/me/lessons/:lessonId/vocabulary/:entryId/review',
+  authenticate,
+  async (req: AuthenticatedRequest, res) => {
+    const user = requireUser(req, res);
+    if (!user) return;
+
+    const parsed = vocabularyReviewDecisionSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
+    }
+
+    const replayExistingDecision = async () => {
+      const existing = await prisma.learnerVocabularyReviewDecision.findUnique({
+        where: {
+          userId_idempotencyKey: {
+            userId: user.id,
+            idempotencyKey: parsed.data.idempotencyKey,
+          },
+        },
+      });
+      if (!existing) return null;
+      if (
+        existing.lessonId !== req.params.lessonId ||
+        existing.entryId !== req.params.entryId ||
+        existing.decision !== parsed.data.decision
+      ) {
+        return { conflict: true as const };
+      }
+      const entry = await prisma.lessonVocabularyEntry.findUnique({
+        where: { id: existing.entryId },
+        include: { translations: true },
+      });
+      if (!entry) return null;
+      return {
+        conflict: false as const,
+        review: {
+          lessonId: existing.lessonId,
+          entryId: existing.entryId,
+          status: existing.resultingStatus,
+          correctStreak: existing.resultingCorrectStreak,
+          rightSwipes: existing.resultingRightSwipes,
+          leftSwipes: existing.resultingLeftSwipes,
+          lastReviewedAt: existing.reviewedAt,
+          firstSeenAt: null,
+          entry: sortEntryTranslations(entry),
+        },
+      };
+    };
+
+    const existingDecision = await replayExistingDecision();
+    if (existingDecision?.conflict) {
+      return res.status(409).json({ message: 'Idempotency key already belongs to another review' });
+    }
+    if (existingDecision) {
+      return res.json({ review: existingDecision.review });
+    }
+
+    try {
+      const review = await prisma.$transaction(async (tx) => {
+        const entry = await tx.lessonVocabularyEntry.findFirst({
+          where: {
+            id: req.params.entryId,
+            lessonId: req.params.lessonId,
+            lesson: { status: 'PUBLISHED' },
+          },
+          include: {
+            translations: true,
+            learnerStatuses: { where: { userId: user.id } },
+          },
+        });
+        if (!entry) return null;
+
+        const current = entry.learnerStatuses[0];
+        if (!current || current.status !== 'LEARNING') {
+          return { inactive: true as const };
+        }
+
+        const next = applyVocabularyReviewDecision(current, parsed.data.decision);
+        const reviewedAt = new Date();
+        const updated = await tx.learnerLessonVocabularyEntry.update({
+          where: { id: current.id },
+          data: {
+            status: next.status,
+            correctStreak: next.correctStreak,
+            rightSwipes: next.rightSwipes,
+            leftSwipes: next.leftSwipes,
+            lastReviewedAt: reviewedAt,
+          },
+        });
+
+        await tx.learnerVocabularyReviewDecision.create({
+          data: {
+            userId: user.id,
+            lessonId: entry.lessonId,
+            entryId: entry.id,
+            decision: parsed.data.decision,
+            idempotencyKey: parsed.data.idempotencyKey,
+            resultingStatus: updated.status,
+            resultingCorrectStreak: updated.correctStreak,
+            resultingRightSwipes: updated.rightSwipes,
+            resultingLeftSwipes: updated.leftSwipes,
+            reviewedAt,
+          },
+        });
+
+        return {
+          inactive: false as const,
+          lessonId: updated.lessonId,
+          entryId: updated.entryId,
+          status: updated.status,
+          correctStreak: updated.correctStreak,
+          rightSwipes: updated.rightSwipes,
+          leftSwipes: updated.leftSwipes,
+          lastReviewedAt: updated.lastReviewedAt,
+          firstSeenAt: updated.firstSeenAt,
+          entry: sortEntryTranslations(entry),
+        };
+      });
+
+      if (!review) {
+        return res.status(404).json({ message: 'Lesson vocabulary entry not found' });
+      }
+      if (review.inactive) {
+        return res.status(409).json({ message: 'Only active learning words can be reviewed' });
+      }
+      return res.json({ review });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        const replay = await replayExistingDecision();
+        if (replay?.conflict) {
+          return res.status(409).json({ message: 'Idempotency key already belongs to another review' });
+        }
+        if (replay) {
+          return res.json({ review: replay.review });
+        }
+      }
+      throw error;
+    }
+  },
+);
 
 router.patch(
   '/me/lessons/:lessonId/vocabulary/:entryId',
@@ -655,6 +868,7 @@ router.patch(
       },
       update: {
         status: nextStatus,
+        correctStreak: nextStatus === 'LEARNED' ? 2 : 0,
         rightSwipes: nextStatus === 'LEARNED' ? { increment: 1 } : undefined,
         leftSwipes: nextStatus === 'LEARNING' ? { increment: 1 } : undefined,
         lastReviewedAt: new Date(),
@@ -664,6 +878,7 @@ router.patch(
         lessonId: req.params.lessonId,
         entryId: entry.id,
         status: nextStatus,
+        correctStreak: nextStatus === 'LEARNED' ? 2 : 0,
         rightSwipes: nextStatus === 'LEARNED' ? 1 : 0,
         leftSwipes: nextStatus === 'LEARNING' ? 1 : 0,
         lastReviewedAt: new Date(),
@@ -675,6 +890,7 @@ router.patch(
         lessonId: updated.lessonId,
         entryId: updated.entryId,
         status: updated.status,
+        correctStreak: updated.correctStreak,
         rightSwipes: updated.rightSwipes,
         leftSwipes: updated.leftSwipes,
         lastReviewedAt: updated.lastReviewedAt,
