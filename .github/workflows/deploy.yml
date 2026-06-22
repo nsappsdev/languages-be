@@ -39,18 +39,18 @@ jobs:
       - name: Deploy on server
         uses: appleboy/ssh-action@v1.2.0
         env:
-          GHCR_USERNAME: ${{ secrets.GHCR_USERNAME }}
-          GHCR_PAT: ${{ secrets.GHCR_PAT }}
+          GHCR_USERNAME: ${{ github.actor }}
+          GHCR_PAT: ${{ secrets.GITHUB_TOKEN }}
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
-          OPENAI_API_KEY: ${OPENAI_API_KEY}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         with:
           host: ${{ secrets.DO_HOST }}
           username: ${{ secrets.DO_SSH_USER }}
           key: ${{ secrets.DO_SSH_KEY }}
           port: ${{ secrets.DO_SSH_PORT || '22' }}
-          envs: GHCR_USERNAME,GHCR_PAT,SMTP_PASS,SMTP_FROM,APP_BASE_URL
+          envs: GHCR_USERNAME,GHCR_PAT,SMTP_PASS,SMTP_FROM,APP_BASE_URL,OPENAI_API_KEY
           script: |
             set -e
             cd /opt/nsapp
@@ -78,6 +78,7 @@ jobs:
             upsert_env SMTP_PASS "$SMTP_PASS"
             upsert_env SMTP_FROM "$SMTP_FROM"
             upsert_env APP_BASE_URL "$APP_BASE_URL"
+            upsert_env OPENAI_API_KEY "$OPENAI_API_KEY"
 
             echo "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
             docker compose pull languages-api
