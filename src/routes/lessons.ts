@@ -7,7 +7,7 @@ import { resolveStoredAudioPath } from '../lib/audioStorage';
 import {
   generateLessonTimingsFromTranscript,
 } from '../lib/lessonTimingAlignment';
-import { transcribeAudioWithWordTimestamps } from '../lib/openaiTranscription';
+import { transcribeAudioWithWordTimestamps } from '../lib/audioTranscription';
 import {
   buildLessonVocabularyPayload,
   canonicalizeVocabularyText,
@@ -136,8 +136,22 @@ const updateLessonSchema = lessonBaseSchema.partial().extend({
 const createItemSchema = itemBaseObjectSchema.omit({ id: true }).superRefine(refineLessonItemTiming);
 
 const generateTimingsSchema = z.object({
-  text: z.string().trim().min(1).optional(),
+  text: z.string().min(1).optional(),
 });
+
+type TimingBenchmarkSummary = {
+  transcriptPreview: string;
+  transcriptWordCount: number;
+  audioDurationSeconds?: number;
+  wordTimingCount: number;
+  sentenceTimingCount: number;
+  segmentCount: number;
+  warningCount: number;
+  estimatedWordCount: number;
+  warnings: string[];
+  firstWordTiming: { text: string; startMs: number; endMs: number } | null;
+  lastWordTiming: { text: string; startMs: number; endMs: number } | null;
+};
 
 const updateSegmentTimingsSchema = z
   .object({
@@ -619,6 +633,7 @@ router.post(
       const lessonText = parsed.data.text ?? item.text;
       const transcription = await transcribeAudioWithWordTimestamps({
         audioPath,
+        audioUrl: item.audioUrl,
         prompt: lessonText,
       });
       const timings = generateLessonTimingsFromTranscript({
@@ -641,6 +656,84 @@ router.post(
       const status = message.includes('OPENAI_API_KEY') ? 503 : 502;
       return res.status(status).json({ message });
     }
+  },
+);
+
+router.post(
+  '/lessons/:lessonId/items/:itemId/benchmark-timings-temp',
+  authenticate,
+  async (req: AuthenticatedRequest, res) => {
+    if (!requireAdmin(req, res)) return;
+
+    const parsed = generateTimingsSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
+    }
+
+    const item = await prisma.lessonItem.findFirst({
+      where: {
+        id: req.params.itemId,
+        lessonId: req.params.lessonId,
+      },
+    });
+    if (!item) {
+      return res.status(404).json({ message: 'Lesson item not found' });
+    }
+    if (!item.audioUrl) {
+      return res.status(400).json({ message: 'Upload audio before benchmarking timings.' });
+    }
+
+    const audioPath = resolveStoredAudioPath(item.audioUrl);
+    if (!audioPath) {
+      return res.status(400).json({
+        message: 'Timing benchmark currently supports uploaded lesson audio files only.',
+      });
+    }
+
+    const lessonText = parsed.data.text ?? item.text;
+    const providers = ['openai-whisper', 'dashscope-qwen-filetrans'] as const;
+
+    const results = await Promise.all(
+      providers.map(async (provider) => {
+        try {
+          const transcription = await transcribeAudioWithWordTimestamps({
+            audioPath,
+            audioUrl: item.audioUrl,
+            prompt: lessonText,
+            provider,
+          });
+          const timings = generateLessonTimingsFromTranscript({
+            lessonText,
+            transcriptText: transcription.text,
+            transcriptWords: transcription.words,
+            audioDurationSeconds: transcription.audioDurationSeconds,
+          });
+
+          return {
+            provider,
+            ok: true,
+            summary: summarizeTimingBenchmark(transcription.text, transcription.words.length, transcription.audioDurationSeconds, timings),
+          };
+        } catch (error) {
+          return {
+            provider,
+            ok: false,
+            error: error instanceof Error ? error.message : 'Benchmark failed',
+          };
+        }
+      }),
+    );
+
+    return res.json({
+      temp: true,
+      lessonId: req.params.lessonId,
+      itemId: req.params.itemId,
+      itemAudioUrl: item.audioUrl,
+      lessonText,
+      results,
+      deleteReminder:
+        'Temporary benchmark endpoint/page only. Delete benchmark-timings-temp route and matching admin page after comparison work is complete.',
+    });
   },
 );
 
@@ -722,5 +815,42 @@ router.delete(
     return res.status(204).send();
   },
 );
+
+function summarizeTimingBenchmark(
+  transcriptText: string,
+  transcriptWordCount: number,
+  audioDurationSeconds: number | undefined,
+  timings: ReturnType<typeof generateLessonTimingsFromTranscript>,
+): TimingBenchmarkSummary {
+  const estimatedWordCount = timings.warnings.filter((warning) =>
+    warning.startsWith('Estimated audio timestamp for '),
+  ).length;
+
+  return {
+    transcriptPreview: transcriptText.slice(0, 280),
+    transcriptWordCount,
+    audioDurationSeconds,
+    wordTimingCount: timings.wordTimings.length,
+    sentenceTimingCount: timings.sentenceTimings.length,
+    segmentCount: timings.segments.length,
+    warningCount: timings.warnings.length,
+    estimatedWordCount,
+    warnings: timings.warnings,
+    firstWordTiming: timings.wordTimings[0]
+      ? {
+          text: timings.wordTimings[0].text,
+          startMs: timings.wordTimings[0].startMs,
+          endMs: timings.wordTimings[0].endMs,
+        }
+      : null,
+    lastWordTiming: timings.wordTimings.at(-1)
+      ? {
+          text: timings.wordTimings.at(-1)!.text,
+          startMs: timings.wordTimings.at(-1)!.startMs,
+          endMs: timings.wordTimings.at(-1)!.endMs,
+        }
+      : null,
+  };
+}
 
 export { router as lessonsRouter };
