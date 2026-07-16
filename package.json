@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "test": "npm run build && node --test dist/lib/__tests__/*.test.js",
+    "benchmark:timings:temp": "npm run build && node dist/scripts/tmpBenchmarkTimingProviders.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "seed": "npm run build && node dist/scripts/seedAdmin.js"
