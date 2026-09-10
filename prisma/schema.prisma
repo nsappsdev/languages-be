@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
 model User {
@@ -59,9 +60,11 @@ model LessonItem {
   wordTimings       Json                    @default("[]")
   sentenceTimings   Json                    @default("[]")
   chunkTimings      Json                    @default("[]")
+  archivedAt        DateTime?
   createdAt         DateTime                @default(now())
   updatedAt         DateTime                @updatedAt
   vocabularyEntries LessonVocabularyEntry[] @relation("LessonItemVocabularySource")
+  textWorkspace     TextWorkspace?
 
   @@unique([lessonId, order])
 }
@@ -214,6 +217,266 @@ model AppSettings {
   updateMessage               String   @default("A newer app version is available.")
   createdAt                   DateTime @default(now())
   updatedAt                   DateTime @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Text/audio authoring (additive, admin-only). See B/docs/text-audio-authoring.md.
+// Every model below is new; nothing here is read by existing learner routes.
+// ---------------------------------------------------------------------------
+
+model TextWorkspace {
+  textId                 String    @id
+  item                   LessonItem @relation(fields: [textId], references: [id], onDelete: Cascade)
+  draftVersion            Int       @default(1)
+  currentContentRevisionId String?
+  currentNarrationId      String?
+  currentAlignmentId      String?
+  approvedTextReleaseId   String?
+  archivedAt              DateTime?
+  createdAt               DateTime  @default(now())
+  updatedAt               DateTime  @updatedAt
+
+  contentRevisions TextContentRevision[]
+  narrations       TextNarration[]
+  alignments       TextAlignment[]
+  vocabularyEntries TextVocabularyEntry[]
+  audioAssets      AudioAsset[]
+  jobs             AudioJob[]
+  releases         TextRelease[]
+  wordClips        WordClip[]
+}
+
+model TextContentRevision {
+  id           String        @id @default(cuid())
+  textId       String
+  workspace    TextWorkspace @relation(fields: [textId], references: [textId], onDelete: Cascade)
+  sequence     Int
+  text         String
+  textSha256   String
+  sourceLanguage String      @default("en")
+  authorId     String
+  createdAt    DateTime      @default(now())
+
+  narrations   TextNarration[]
+  alignments   TextAlignment[]
+
+  @@unique([textId, sequence])
+}
+
+enum AudioAssetKind {
+  NARRATION
+  WORD_CLIP
+  LEGACY_REFERENCE
+}
+
+enum AudioAssetState {
+  STAGED
+  READY
+  QUARANTINED
+  DELETED
+}
+
+model AudioAsset {
+  id          String           @id @default(cuid())
+  textId      String
+  workspace   TextWorkspace    @relation(fields: [textId], references: [textId], onDelete: Cascade)
+  kind        AudioAssetKind
+  storageKey  String           @unique
+  mimeType    String
+  byteLength  Int
+  sha256      String
+  sampleRate  Int?
+  channels    Int?
+  bitDepth    Int?
+  frameCount  Int?
+  state       AudioAssetState  @default(STAGED)
+  createdAt   DateTime         @default(now())
+
+  narrations  TextNarration[]
+  wordClips   WordClip[]
+
+  @@index([textId, kind])
+}
+
+model TextNarration {
+  id                String        @id @default(cuid())
+  textId            String
+  workspace         TextWorkspace @relation(fields: [textId], references: [textId], onDelete: Cascade)
+  contentRevisionId String
+  contentRevision   TextContentRevision @relation(fields: [contentRevisionId], references: [id])
+  assetId           String
+  asset             AudioAsset    @relation(fields: [assetId], references: [id])
+  jobId             String
+  provider          String
+  model             String
+  voiceId           String
+  requestSettings   Json
+  inputTextSha256   String
+  rawAlignment      Json
+  createdAt         DateTime      @default(now())
+
+  alignments TextAlignment[]
+  wordClips  WordClip[]
+
+  @@index([textId, createdAt])
+}
+
+enum TextAlignmentStatus {
+  OK
+  NEEDS_REVIEW
+}
+
+model TextAlignment {
+  id                String              @id @default(cuid())
+  textId            String
+  workspace         TextWorkspace       @relation(fields: [textId], references: [textId], onDelete: Cascade)
+  contentRevisionId String
+  contentRevision   TextContentRevision @relation(fields: [contentRevisionId], references: [id])
+  narrationId       String
+  narration         TextNarration       @relation(fields: [narrationId], references: [id])
+  algorithmVersion  Int                 @default(1)
+  status            TextAlignmentStatus
+  sentences         Json
+  diagnostics       Json
+  createdAt         DateTime            @default(now())
+
+  occurrences WordOccurrence[]
+  entries     TextVocabularyEntry[]
+  wordClips   WordClip[]
+
+  @@index([textId, createdAt])
+}
+
+enum OccurrenceMappingStatus {
+  MAPPED
+  UNMAPPED
+}
+
+model WordOccurrence {
+  id                String        @id @default(cuid())
+  alignmentId       String
+  alignment         TextAlignment @relation(fields: [alignmentId], references: [id], onDelete: Cascade)
+  ordinal           Int
+  sentenceId         String
+  charStart          Int
+  charEnd            Int
+  surfaceText         String
+  normalizedText       String
+  speechStartSample   Int?
+  speechEndSample     Int?
+  cutStartSample      Int?
+  cutEndSample        Int?
+  mappingStatus       OccurrenceMappingStatus
+
+  @@unique([alignmentId, ordinal])
+  @@index([alignmentId, charStart])
+}
+
+model TextVocabularyEntry {
+  id           String        @id @default(cuid())
+  textId       String
+  workspace    TextWorkspace @relation(fields: [textId], references: [textId], onDelete: Cascade)
+  alignmentId  String
+  alignment    TextAlignment @relation(fields: [alignmentId], references: [id], onDelete: Cascade)
+  occurrenceId String
+  selected     Boolean       @default(true)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  archivedAt   DateTime?
+
+  translations TextVocabularyTranslation[]
+  wordClips    WordClip[]
+
+  @@unique([alignmentId, occurrenceId])
+  @@index([textId])
+}
+
+model TextVocabularyTranslation {
+  id           String              @id @default(cuid())
+  entryId      String
+  entry        TextVocabularyEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  languageCode String
+  translation  String
+  usageExample String?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  @@unique([entryId, languageCode])
+}
+
+model WordClip {
+  id               String        @id @default(cuid())
+  textId           String
+  workspace        TextWorkspace @relation(fields: [textId], references: [textId], onDelete: Cascade)
+  narrationId      String
+  narration        TextNarration @relation(fields: [narrationId], references: [id])
+  alignmentId      String
+  alignment        TextAlignment @relation(fields: [alignmentId], references: [id])
+  occurrenceId     String
+  entryId          String
+  entry            TextVocabularyEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  assetId          String
+  asset            AudioAsset    @relation(fields: [assetId], references: [id])
+  startSample      Int
+  endSample        Int
+  extractionVersion Int          @default(1)
+  createdAt        DateTime      @default(now())
+
+  @@unique([occurrenceId, extractionVersion])
+  @@index([textId])
+}
+
+model TextRelease {
+  id                String   @id @default(cuid())
+  textId            String
+  workspace         TextWorkspace @relation(fields: [textId], references: [textId], onDelete: Cascade)
+  contentRevisionId String
+  narrationId       String
+  alignmentId       String
+  entryIds          Json
+  readinessSnapshot Json
+  authorId          String
+  createdAt         DateTime @default(now())
+
+  @@index([textId, createdAt])
+}
+
+enum AudioJobKind {
+  GENERATE_NARRATION
+  EXTRACT_CLIPS
+}
+
+enum AudioJobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  CANCELLED
+}
+
+model AudioJob {
+  id             String         @id @default(cuid())
+  textId         String
+  workspace      TextWorkspace  @relation(fields: [textId], references: [textId], onDelete: Cascade)
+  kind           AudioJobKind
+  actorId        String
+  idempotencyKey String
+  requestHash    String
+  requestPayload Json
+  status         AudioJobStatus @default(QUEUED)
+  attempt        Int            @default(0)
+  leaseUntil     DateTime?
+  resultAssetId  String?
+  resultId       String?
+  errorCode      String?
+  errorMessage   String?
+  retryable      Boolean        @default(false)
+  reservedCharacters Int        @default(0)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@unique([textId, kind, idempotencyKey])
+  @@index([status, createdAt])
 }
 
 model AuthRefreshToken {

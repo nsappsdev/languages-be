@@ -22,4 +22,12 @@ export const config = {
     clientId: process.env.GOOGLE_CLIENT_ID ?? '',
     clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
   },
+  elevenLabs: {
+    apiKey: process.env.ELEVENLABS_API_KEY ?? '',
+    defaultVoiceId: process.env.ELEVENLABS_DEFAULT_VOICE_ID ?? '',
+  },
+  audioWorker: {
+    enabled: (process.env.AUDIO_WORKER_ENABLED ?? 'false').toLowerCase() === 'true',
+    pollIntervalMs: parseInt(process.env.AUDIO_WORKER_POLL_INTERVAL_MS ?? '', 10) || 2000,
+  },
 };

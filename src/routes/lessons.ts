@@ -12,6 +12,7 @@ import {
   buildLessonVocabularyPayload,
   canonicalizeVocabularyText,
 } from '../lib/vocabularyIngestion';
+import { planLessonItemReconciliation } from '../lib/lessonItemReconciliation';
 
 const router = Router();
 
@@ -290,6 +291,7 @@ router.get('/lessons', authenticate, async (req: AuthenticatedRequest, res) => {
     orderBy: { updatedAt: 'desc' },
     include: {
       items: {
+        where: { archivedAt: null },
         orderBy: { order: 'asc' },
       },
     },
@@ -307,6 +309,7 @@ router.get('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res) 
     where,
     include: {
       items: {
+        where: { archivedAt: null },
         orderBy: { order: 'asc' },
       },
     },
@@ -394,7 +397,7 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
 
   const existing = await prisma.lesson.findUnique({
     where: { id: req.params.id },
-    include: { items: { orderBy: { order: 'asc' } } },
+    include: { items: true },
   });
   if (!existing) {
     return res.status(404).json({ message: 'Lesson not found' });
@@ -402,8 +405,96 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
 
   const { title, description, status, items } = parsed.data;
   const normalizedItems = items?.map(normalizeLessonItemPayload);
-  await prisma.$transaction(async (tx) => {
-    await tx.lesson.update({
+
+  if (normalizedItems) {
+    const suppliedIds = normalizedItems.map((item) => item.id).filter((id): id is string => Boolean(id));
+    const foreignItems = suppliedIds.length
+      ? await prisma.lessonItem.findMany({
+          where: { id: { in: suppliedIds }, lessonId: { not: req.params.id } },
+          select: { id: true },
+        })
+      : [];
+    const foreignItemIds = new Set(foreignItems.map((item) => item.id));
+
+    const activeExistingItems = existing.items.filter((item) => !item.archivedAt);
+    const allOrders = existing.items.map((item) => item.order);
+    const archiveOrderCeiling = allOrders.length ? Math.min(0, ...allOrders) - 1 : -1;
+
+    const plan = planLessonItemReconciliation({
+      lessonId: req.params.id,
+      existingItems: activeExistingItems.map((item) => ({ id: item.id, order: item.order, lessonId: item.lessonId })),
+      incomingItems: normalizedItems,
+      foreignItemIds,
+      archiveOrderCeiling,
+    });
+
+    if (!plan.ok) {
+      return res.status(409).json({ message: plan.error });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.lesson.update({
+        where: { id: req.params.id },
+        data: {
+          title: title ?? existing.title,
+          description: description ?? existing.description,
+          status: status ?? existing.status,
+          publishedAt:
+            status === 'PUBLISHED'
+              ? existing.publishedAt ?? new Date()
+              : status === 'DRAFT'
+                ? null
+                : existing.publishedAt,
+        },
+      });
+
+      // Phase 1: move every retained-but-reordered row to a unique negative
+      // placeholder so unique(lessonId, order) never collides mid-swap.
+      for (const staging of plan.stagingOrders) {
+        await tx.lessonItem.update({ where: { id: staging.id }, data: { order: staging.placeholderOrder } });
+      }
+      // Phase 2: archive rows omitted from the supplied array (never deleted).
+      for (const archive of plan.archives) {
+        await tx.lessonItem.update({
+          where: { id: archive.id },
+          data: { order: archive.archivedOrder, archivedAt: new Date() },
+        });
+      }
+      // Phase 3: write final field values (including final order) for retained rows.
+      for (const update of plan.updates) {
+        await tx.lessonItem.update({
+          where: { id: update.id },
+          data: {
+            order: update.order,
+            text: update.text,
+            audioUrl: update.audioUrl as string,
+            segments: update.segments as Prisma.InputJsonValue,
+            wordTimings: update.wordTimings as Prisma.InputJsonValue,
+            sentenceTimings: update.sentenceTimings as Prisma.InputJsonValue,
+            chunkTimings: update.chunkTimings as Prisma.InputJsonValue,
+            archivedAt: null,
+          },
+        });
+      }
+      // Phase 4: create genuinely new rows (client-supplied unused id or none).
+      if (plan.creates.length) {
+        await tx.lessonItem.createMany({
+          data: plan.creates.map((item) => ({
+            id: item.id,
+            lessonId: req.params.id,
+            order: item.order,
+            text: item.text,
+            audioUrl: item.audioUrl as string,
+            segments: item.segments as Prisma.InputJsonValue,
+            wordTimings: item.wordTimings as Prisma.InputJsonValue,
+            sentenceTimings: item.sentenceTimings as Prisma.InputJsonValue,
+            chunkTimings: item.chunkTimings as Prisma.InputJsonValue,
+          })),
+        });
+      }
+    });
+  } else {
+    await prisma.lesson.update({
       where: { id: req.params.id },
       data: {
         title: title ?? existing.title,
@@ -417,31 +508,15 @@ router.patch('/lessons/:id', authenticate, async (req: AuthenticatedRequest, res
               : existing.publishedAt,
       },
     });
-
-    if (normalizedItems) {
-      await tx.lessonItem.deleteMany({ where: { lessonId: req.params.id } });
-      if (normalizedItems.length) {
-        await tx.lessonItem.createMany({
-          data: normalizedItems.map((item) => ({
-            id: item.id,
-            lessonId: req.params.id,
-            order: item.order,
-            text: item.text,
-            audioUrl: item.audioUrl,
-            segments: item.segments,
-            wordTimings: item.wordTimings,
-            sentenceTimings: item.sentenceTimings,
-            chunkTimings: item.chunkTimings,
-          })),
-        });
-      }
-    }
-  });
+  }
 
   const updated = await prisma.lesson.findUnique({
     where: { id: req.params.id },
     include: {
-      items: { orderBy: { order: 'asc' } },
+      items: {
+        where: { archivedAt: null },
+        orderBy: { order: 'asc' },
+      },
     },
   });
 
@@ -813,7 +888,18 @@ router.delete(
     if (!item) {
       return res.status(404).json({ message: 'Lesson item not found' });
     }
-    await prisma.lessonItem.delete({ where: { id: item.id } });
+    // Archive rather than hard-delete: preserves source FK references (legacy
+    // vocabulary sourceItemId) and any TextWorkspace/text-authoring history
+    // owned by this item, instead of cascading them away.
+    const allItems = await prisma.lessonItem.findMany({
+      where: { lessonId: req.params.lessonId },
+      select: { order: true },
+    });
+    const archiveOrder = Math.min(0, ...allItems.map((i) => i.order)) - 1;
+    await prisma.lessonItem.update({
+      where: { id: item.id },
+      data: { archivedAt: new Date(), order: archiveOrder },
+    });
     return res.status(204).send();
   },
 );
