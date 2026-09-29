@@ -53,7 +53,7 @@ export async function saveContentRevision(prisma: PrismaClient, params: SaveCont
       ? await tx.textContentRevision.findUnique({ where: { id: workspace.currentContentRevisionId } })
       : null;
 
-    if (latest && latest.textSha256 === textSha256) {
+    if (latest && latest.textSha256 === textSha256 && latest.sourceLanguage === params.sourceLanguage) {
       return { revision: latest, isNoOp: true, workspace };
     }
 
@@ -83,6 +83,7 @@ export async function saveContentRevision(prisma: PrismaClient, params: SaveCont
         // just no longer "current" (plan §6.1 item 6).
         currentNarrationId: null,
         currentAlignmentId: null,
+        approvedTextReleaseId: null,
         draftVersion: { increment: 1 },
       },
     });

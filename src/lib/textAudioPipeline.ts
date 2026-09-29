@@ -27,7 +27,7 @@ export async function runGenerateNarrationJob(prisma: PrismaClient, job: AudioJo
   const payload = job.requestPayload as unknown as GenerateNarrationPayload;
 
   const contentRevision = await prisma.textContentRevision.findUnique({ where: { id: payload.contentRevisionId } });
-  if (!contentRevision) {
+  if (!contentRevision || contentRevision.textId !== job.textId) {
     await failJob(prisma, job.id, { code: 'CONTENT_REVISION_NOT_FOUND', message: 'Saved text revision no longer exists', retryable: false });
     return;
   }
@@ -127,9 +127,10 @@ export async function runGenerateNarrationJob(prisma: PrismaClient, job: AudioJo
       });
     }
 
-    await tx.textWorkspace.update({
-      where: { textId: job.textId },
-      data: { currentNarrationId: narration.id, currentAlignmentId: alignment.id },
+    // A completed job belongs to its saved revision, even if the admin has edited meanwhile.
+    await tx.textWorkspace.updateMany({
+      where: { textId: job.textId, currentContentRevisionId: contentRevision.id },
+      data: { currentNarrationId: narration.id, currentAlignmentId: alignment.id, approvedTextReleaseId: null },
     });
 
     await completeJob(tx, job.id, { resultAssetId: asset.id, resultId: alignment.id });

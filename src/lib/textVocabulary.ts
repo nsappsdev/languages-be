@@ -18,6 +18,7 @@ export async function setSelection(
   params: { textId: string; alignmentId: string; changes: SelectionChange[] },
 ) {
   return prisma.$transaction(async (tx) => {
+    await tx.textWorkspace.update({ where: { textId: params.textId }, data: { draftVersion: { increment: 1 }, approvedTextReleaseId: null } });
     const alignment = await tx.textAlignment.findFirst({ where: { id: params.alignmentId, textId: params.textId } });
     if (!alignment) {
       throw new TextWorkspaceError('ALIGNMENT_NOT_FOUND', 'Alignment does not belong to this text');
@@ -74,6 +75,7 @@ export async function setTranslations(
   params: { entryId: string; textId: string; translations: TranslationInput[] },
 ) {
   return prisma.$transaction(async (tx) => {
+    await tx.textWorkspace.update({ where: { textId: params.textId }, data: { draftVersion: { increment: 1 }, approvedTextReleaseId: null } });
     const entry = await tx.textVocabularyEntry.findFirst({ where: { id: params.entryId, textId: params.textId } });
     if (!entry) {
       throw new TextWorkspaceError('ENTRY_NOT_FOUND', 'Vocabulary entry does not belong to this text');

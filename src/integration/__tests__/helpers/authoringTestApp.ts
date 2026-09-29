@@ -1,5 +1,6 @@
 import http from 'http';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import { assertDisposableDatabaseUrl } from './testDbGuard';
 
 assertDisposableDatabaseUrl();
@@ -28,13 +29,10 @@ export async function startTestServer(): Promise<TestServer> {
   };
 }
 
-let adminCounter = 0;
-
 export async function createTestAdminUser() {
-  adminCounter += 1;
   const user = await prisma.user.create({
     data: {
-      email: `authoring-admin-${Date.now()}-${adminCounter}@example.test`,
+      email: `authoring-admin-${crypto.randomUUID()}@example.test`,
       name: 'Authoring Test Admin',
       role: 'admin',
       authProvider: 'test',

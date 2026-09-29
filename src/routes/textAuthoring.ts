@@ -5,7 +5,9 @@ import { prisma } from '../lib/prisma';
 import { config } from '../config';
 import { ensureWorkspace, saveContentRevision } from '../lib/textWorkspaces';
 import { setSelection, setTranslations } from '../lib/textVocabulary';
-import { computeTextReadiness } from '../lib/textReadiness';
+import crypto from 'crypto';
+import { Prisma } from '@prisma/client';
+import { inspectReaderDraft, ReaderReleaseError } from '../lib/readerRelease';
 import { createOrReplayJob, requeueJob, JobConflictError } from '../lib/audioJobs';
 import { TextWorkspaceError } from '../lib/textWorkspaces';
 
@@ -31,6 +33,8 @@ async function loadTextContext(lessonId: string, textId: string) {
 }
 
 function errorResponse(res: Response, error: unknown) {
+  if (error instanceof ReaderReleaseError) return res.status(error.status).json({ message: error.message, ...error.details });
+  if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') return res.status(409).json({ message: 'Text changed while saving. Reload and try again.' });
   if (error instanceof TextWorkspaceError) {
     return res.status(404).json({ message: error.message, code: error.code });
   }
@@ -375,31 +379,10 @@ router.get(
     const context = await loadTextContext(req.params.lessonId, req.params.textId);
     if (!context) return res.status(404).json({ message: 'Text not found' });
 
-    const narrationStatus = context.workspace.currentNarrationId ? 'READY' : 'MISSING';
-    const alignment = context.workspace.currentAlignmentId
-      ? await prisma.textAlignment.findUnique({ where: { id: context.workspace.currentAlignmentId } })
-      : null;
-    const alignmentStatus = alignment ? alignment.status : 'MISSING';
-
-    const entries = context.workspace.currentAlignmentId
-      ? await prisma.textVocabularyEntry.findMany({
-          where: { alignmentId: context.workspace.currentAlignmentId, archivedAt: null },
-          include: { translations: true, wordClips: true },
-        })
-      : [];
-
-    const readiness = computeTextReadiness({
-      narrationStatus,
-      alignmentStatus: alignmentStatus as 'OK' | 'NEEDS_REVIEW' | 'MISSING',
-      entries: entries.map((entry) => ({
-        id: entry.id,
-        selected: entry.selected,
-        hasNonBlankTranslation: entry.translations.some((t) => t.translation.trim().length > 0),
-        hasCurrentClip: entry.wordClips.length > 0,
-      })),
-    });
-
-    return res.json({ readiness });
+    try {
+      const { readiness } = await inspectReaderDraft(prisma, context.item.id);
+      return res.json({ readiness });
+    } catch (error) { return errorResponse(res, error); }
   },
 );
 
@@ -422,51 +405,25 @@ router.post(
       return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
     }
 
-    if (
-      context.workspace.currentContentRevisionId !== parsed.data.contentRevisionId ||
-      context.workspace.currentNarrationId !== parsed.data.narrationId ||
-      context.workspace.currentAlignmentId !== parsed.data.alignmentId
-    ) {
-      return res.status(409).json({ message: 'Supplied lineage is not the current draft lineage for this text' });
-    }
-
-    const alignment = await prisma.textAlignment.findUnique({ where: { id: parsed.data.alignmentId } });
-    const entries = await prisma.textVocabularyEntry.findMany({
-      where: { alignmentId: parsed.data.alignmentId, archivedAt: null },
-      include: { translations: true, wordClips: true },
-    });
-    const readiness = computeTextReadiness({
-      narrationStatus: 'READY',
-      alignmentStatus: (alignment?.status ?? 'MISSING') as 'OK' | 'NEEDS_REVIEW' | 'MISSING',
-      entries: entries.map((entry) => ({
-        id: entry.id,
-        selected: entry.selected,
-        hasNonBlankTranslation: entry.translations.some((t) => t.translation.trim().length > 0),
-        hasCurrentClip: entry.wordClips.length > 0,
-      })),
-    });
-
-    if (!readiness.readyForApproval) {
-      return res.status(422).json({ message: 'Text is not ready for approval', readiness });
-    }
-
-    const release = await prisma.$transaction(async (tx) => {
-      const created = await tx.textRelease.create({
-        data: {
-          textId: context.item.id,
-          contentRevisionId: parsed.data.contentRevisionId,
-          narrationId: parsed.data.narrationId,
-          alignmentId: parsed.data.alignmentId,
-          entryIds: readiness.eligibleEntryIds,
-          readinessSnapshot: readiness as any,
+    try {
+      const release = await prisma.$transaction(async tx => {
+        const { workspace, readiness, snapshot } = await inspectReaderDraft(tx, context.item.id);
+        if (workspace.currentContentRevisionId !== parsed.data.contentRevisionId ||
+            workspace.currentNarrationId !== parsed.data.narrationId || workspace.currentAlignmentId !== parsed.data.alignmentId) {
+          throw new ReaderReleaseError(409, 'Supplied lineage is not the current draft lineage for this text');
+        }
+        if (!snapshot || !readiness.readyForApproval) throw new ReaderReleaseError(422, 'Text is not ready for approval', { readiness });
+        const id = crypto.randomUUID();
+        const created = await tx.textRelease.create({ data: {
+          id, textId: context.item.id, ...parsed.data, entryIds: readiness.eligibleEntryIds,
+          readinessSnapshot: readiness as any, manifestSnapshot: { ...snapshot, textReleaseId: id } as any,
           authorId: req.user!.id,
-        },
-      });
-      await tx.textWorkspace.update({ where: { textId: context.item.id }, data: { approvedTextReleaseId: created.id } });
-      return created;
-    });
-
-    return res.status(201).json({ release });
+        } });
+        await tx.textWorkspace.update({ where: { textId: context.item.id }, data: { approvedTextReleaseId: id } });
+        return created;
+      }, { isolationLevel: 'Serializable' });
+      return res.status(201).json({ release });
+    } catch (error) { return errorResponse(res, error); }
   },
 );
 

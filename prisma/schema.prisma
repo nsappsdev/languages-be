@@ -31,6 +31,8 @@ model User {
   vocabularyReviewDecisions      LearnerVocabularyReviewDecision[]
   progressEvents                 LearnerProgressEvent[]
   refreshTokens                  AuthRefreshToken[]
+  readerWords                    ReaderWordState[]
+  readerProgress                 ReaderProgress[]
 }
 
 model Lesson {
@@ -47,6 +49,8 @@ model Lesson {
   vocabularyEntries              LessonVocabularyEntry[]
   learnerLessonVocabularyEntries LearnerLessonVocabularyEntry[]
   vocabularyReviewDecisions      LearnerVocabularyReviewDecision[]
+  currentPublicationId           String?
+  readerPublications             LessonPublication[]
 }
 
 model LessonItem {
@@ -435,10 +439,55 @@ model TextRelease {
   alignmentId       String
   entryIds          Json
   readinessSnapshot Json
+  manifestSnapshot  Json?
   authorId          String
   createdAt         DateTime @default(now())
 
   @@index([textId, createdAt])
+}
+
+// Immutable learner delivery. Draft edits never mutate a published manifest.
+model LessonPublication {
+  id          String   @id @default(cuid())
+  lessonId    String
+  lesson      Lesson   @relation(fields: [lessonId], references: [id], onDelete: Cascade)
+  manifest    Json
+  assetIds    String[]
+  authorId    String
+  createdAt   DateTime @default(now())
+  revokedAt   DateTime?
+  words       ReaderWordState[]
+  progress    ReaderProgress[]
+
+  @@index([lessonId, createdAt])
+}
+
+model ReaderWordState {
+  userId          String
+  user            User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  publicationId   String
+  publication     LessonPublication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+  textReleaseId   String
+  occurrenceId    String
+  status          LearnerLessonVocabularyStatus @default(LEARNING)
+  clientUpdatedAt DateTime
+  updatedAt       DateTime @updatedAt
+
+  @@id([userId, textReleaseId, occurrenceId])
+}
+
+model ReaderProgress {
+  userId          String
+  user            User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  publicationId   String
+  publication     LessonPublication @relation(fields: [publicationId], references: [id], onDelete: Cascade)
+  textReleaseId   String
+  lastSample      Int @default(0)
+  completed       Boolean @default(false)
+  clientUpdatedAt DateTime
+  updatedAt       DateTime @updatedAt
+
+  @@id([userId, textReleaseId])
 }
 
 enum AudioJobKind {

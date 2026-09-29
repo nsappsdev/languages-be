@@ -15,6 +15,7 @@ import { settingsRouter } from './routes/settings';
 import { appVersionRouter } from './routes/appVersion';
 import { textAuthoringRouter } from './routes/textAuthoring';
 import { adminAudioAssetsRouter } from './routes/adminAudioAssets';
+import { readerRouter } from './routes/reader';
 
 export function createApp() {
   const app = express();
@@ -44,6 +45,7 @@ export function createApp() {
   app.use('/api', appVersionRouter);
   app.use('/api', textAuthoringRouter);
   app.use('/api', adminAudioAssetsRouter);
+  app.use('/api', readerRouter);
 
   return app;
 }
