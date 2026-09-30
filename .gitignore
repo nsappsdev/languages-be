@@ -22,3 +22,7 @@ docs/
 
 # certs / keys
 *.pem
+
+# private text/audio authoring assets (narration, clips, staged provider
+# responses) - never committed, never served by the public /media route
+/var/audio-authoring/
