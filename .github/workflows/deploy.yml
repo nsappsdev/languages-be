@@ -16,6 +16,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify audio authoring secrets
+        env:
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          ELEVENLABS_DEFAULT_VOICE_ID: ${{ secrets.ELEVENLABS_DEFAULT_VOICE_ID }}
+        run: |
+          if [ -z "$ELEVENLABS_API_KEY" ]; then
+            echo "::error::Missing Actions secret ELEVENLABS_API_KEY"
+            exit 1
+          fi
+          if [ -z "$ELEVENLABS_DEFAULT_VOICE_ID" ]; then
+            echo "::error::Missing Actions secret ELEVENLABS_DEFAULT_VOICE_ID"
+            exit 1
+          fi
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -45,12 +59,14 @@ jobs:
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+          ELEVENLABS_DEFAULT_VOICE_ID: ${{ secrets.ELEVENLABS_DEFAULT_VOICE_ID }}
         with:
           host: ${{ secrets.DO_HOST }}
           username: ${{ secrets.DO_SSH_USER }}
           key: ${{ secrets.DO_SSH_KEY }}
           port: ${{ secrets.DO_SSH_PORT || '22' }}
-          envs: GHCR_USERNAME,GHCR_PAT,SMTP_PASS,SMTP_FROM,APP_BASE_URL,OPENAI_API_KEY
+          envs: GHCR_USERNAME,GHCR_PAT,SMTP_PASS,SMTP_FROM,APP_BASE_URL,OPENAI_API_KEY,ELEVENLABS_API_KEY,ELEVENLABS_DEFAULT_VOICE_ID
           script: |
             set -e
             cd /opt/nsapp
@@ -79,6 +95,27 @@ jobs:
             upsert_env SMTP_FROM "$SMTP_FROM"
             upsert_env APP_BASE_URL "$APP_BASE_URL"
             upsert_env OPENAI_API_KEY "$OPENAI_API_KEY"
+            upsert_env ELEVENLABS_API_KEY "$ELEVENLABS_API_KEY"
+            upsert_env ELEVENLABS_DEFAULT_VOICE_ID "$ELEVENLABS_DEFAULT_VOICE_ID"
+            upsert_env AUDIO_WORKER_ENABLED "true"
+            upsert_env AUDIO_WORKER_POLL_INTERVAL_MS "2000"
+            upsert_env AUDIO_AUTHORING_STORAGE_ROOT "/app/var/audio-authoring"
+            upsert_env COMPOSE_FILE "docker-compose.yml:docker-compose.audio-authoring.yml"
+
+            install -d -o 1000 -g 1000 -m 0750 /opt/nsapp/data/audio-authoring
+            cat > docker-compose.audio-authoring.yml <<'COMPOSE'
+            services:
+              languages-api:
+                environment:
+                  ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:?ELEVENLABS_API_KEY is required}
+                  ELEVENLABS_DEFAULT_VOICE_ID: ${ELEVENLABS_DEFAULT_VOICE_ID:?ELEVENLABS_DEFAULT_VOICE_ID is required}
+                  AUDIO_WORKER_ENABLED: ${AUDIO_WORKER_ENABLED:-false}
+                  AUDIO_WORKER_POLL_INTERVAL_MS: ${AUDIO_WORKER_POLL_INTERVAL_MS:-2000}
+                  AUDIO_AUTHORING_STORAGE_ROOT: ${AUDIO_AUTHORING_STORAGE_ROOT:-/app/var/audio-authoring}
+                volumes:
+                  - /opt/nsapp/data/audio-authoring:/app/var/audio-authoring
+            COMPOSE
+            chmod 600 .env
 
             echo "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
             docker compose pull languages-api
