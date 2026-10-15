@@ -5,10 +5,9 @@
   "type": "commonjs",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
-    "build": "tsc -p tsconfig.json",
+    "build": "rm -rf dist && tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "test": "npm run build && node --test dist/lib/__tests__/*.test.js",
-    "benchmark:timings:temp": "npm run build && node dist/scripts/tmpBenchmarkTimingProviders.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "seed": "npm run build && node dist/scripts/seedAdmin.js"
@@ -20,7 +19,6 @@
     "express": "^4.19.2",
     "google-auth-library": "^10.6.2",
     "jsonwebtoken": "^9.0.2",
-    "multer": "^2.1.1",
     "resend": "^6.11.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
@@ -30,7 +28,6 @@
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/jsonwebtoken": "^9.0.6",
-    "@types/multer": "^2.1.0",
     "@types/node": "^20.11.30",
     "prisma": "^6.19.2",
     "ts-node-dev": "^2.0.0",

@@ -7,10 +7,10 @@ const router = Router();
 router.get('/analytics/overview', authenticate, async (_req: AuthenticatedRequest, res) => {
   const [totalLessons, publishedLessons, totalItems, latestLesson] = await Promise.all([
     prisma.lesson.count(),
-    prisma.lesson.count({ where: { status: 'PUBLISHED' } }),
-    prisma.lessonItem.count(),
+    prisma.lesson.count({ where: { currentPublicationId: { not: null } } }),
+    prisma.lessonItem.count({ where: { archivedAt: null } }),
     prisma.lesson.findFirst({
-      where: { status: 'PUBLISHED' },
+      where: { currentPublicationId: { not: null } },
       orderBy: { publishedAt: 'desc' },
       select: { title: true, publishedAt: true },
     }),

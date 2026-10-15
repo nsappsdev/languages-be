@@ -1,11 +1,13 @@
 import { AudioJob, PrismaClient } from '@prisma/client';
 import { generateNarration, ProviderError } from './elevenLabsNarration';
 import { buildTextAlignment, type ElevenLabsCharacterAlignment } from './textOccurrenceAlignment';
-import { encodeWav, decodeWav } from './pcmWav';
+import { encodeWav } from './pcmWav';
 import { writeAudioAsset } from './audioAssetStorage';
-import { computeContiguousCutBoundaries, extractWordClip } from './wordClipExtraction';
 import { completeJob, failJob } from './audioJobs';
 import { config } from '../config';
+import { lockText } from './authoringTransaction';
+import { inspectReaderDraft } from './readerRelease';
+import { extractMissingClips } from './lessonPublication';
 
 /**
  * Executes one claimed AudioJob to completion (success or terminal failure).
@@ -55,6 +57,7 @@ export async function runGenerateNarrationJob(prisma: PrismaClient, job: AudioJo
   const written = await writeAudioAsset({ textId: job.textId, kind: 'NARRATION', bytes: wavBytes });
 
   await prisma.$transaction(async (tx) => {
+    await lockText(tx, job.textId);
     const asset = await tx.audioAsset.create({
       data: {
         textId: job.textId,
@@ -130,114 +133,27 @@ export async function runGenerateNarrationJob(prisma: PrismaClient, job: AudioJo
     // A completed job belongs to its saved revision, even if the admin has edited meanwhile.
     await tx.textWorkspace.updateMany({
       where: { textId: job.textId, currentContentRevisionId: contentRevision.id },
-      data: { currentNarrationId: narration.id, currentAlignmentId: alignment.id, approvedTextReleaseId: null },
+      data: { currentNarrationId: narration.id, currentAlignmentId: alignment.id, approvedTextReleaseId: null, draftVersion: { increment: 1 } },
     });
 
     await completeJob(tx, job.id, { resultAssetId: asset.id, resultId: alignment.id });
   });
 }
 
+// Kept for already queued local extraction jobs during rollout; publication now
+// performs extraction directly. Old jobs cannot attach clips to a new narration.
 export async function runExtractClipsJob(prisma: PrismaClient, job: AudioJob) {
   const payload = job.requestPayload as unknown as ExtractClipsPayload;
-
-  const narration = await prisma.textNarration.findUnique({ where: { id: payload.narrationId }, include: { asset: true } });
-  if (!narration || narration.textId !== job.textId) {
-    await failJob(prisma, job.id, { code: 'NARRATION_NOT_FOUND', message: 'Narration not found for this text', retryable: false });
-    return;
+  try {
+    await prisma.$transaction(async tx => {
+      await lockText(tx, job.textId);
+      const draft = await inspectReaderDraft(tx, job.textId);
+      if (draft.workspace.currentNarrationId !== payload.narrationId || draft.workspace.currentAlignmentId !== payload.alignmentId)
+        throw new Error('Narration changed. These clips are obsolete.');
+      await extractMissingClips(tx, { ...draft, missingClipOccurrenceIds: draft.missingClipOccurrenceIds.filter(id => payload.occurrenceIds.includes(id)) });
+      await completeJob(tx, job.id, {});
+    }, { timeout: 60000 });
+  } catch (error) {
+    await failJob(prisma, job.id, { code: 'CLIP_EXTRACTION_FAILED', message: error instanceof Error ? error.message : 'Clip extraction failed', retryable: false });
   }
-
-  const { readAudioAssetRange } = await import('./audioAssetStorage');
-  const range = readAudioAssetRange(narration.asset.storageKey, 0, narration.asset.byteLength);
-  if (!range) {
-    await failJob(prisma, job.id, { code: 'NARRATION_ASSET_MISSING', message: 'Narration audio bytes are missing from storage', retryable: false });
-    return;
-  }
-  const decoded = decodeWav(range.buffer);
-
-  const allOccurrences = await prisma.wordOccurrence.findMany({
-    where: { alignmentId: payload.alignmentId },
-    orderBy: { ordinal: 'asc' },
-  });
-  const mapped = allOccurrences.filter(
-    (o): o is typeof o & { speechStartSample: number; speechEndSample: number } =>
-      o.speechStartSample !== null && o.speechEndSample !== null,
-  );
-  const boundaries = computeContiguousCutBoundaries(
-    mapped.map((o) => ({ ordinal: o.ordinal, speechStartSample: o.speechStartSample, speechEndSample: o.speechEndSample })),
-    decoded.frameCount,
-  );
-
-  if (boundaries.status !== 'OK') {
-    await failJob(prisma, job.id, {
-      code: 'CUT_REVIEW_REQUIRED',
-      message: 'Word speech spans overlap or are non-increasing; manual boundary review is required before extraction.',
-      retryable: false,
-    });
-    return;
-  }
-
-  const boundaryByOrdinal = new Map(boundaries.cuts.map((cut) => [cut.ordinal, cut]));
-  const requestedOccurrences = allOccurrences.filter((o) => payload.occurrenceIds.includes(o.id));
-
-  await prisma.$transaction(async (tx) => {
-    for (const occurrence of requestedOccurrences) {
-      const cut = boundaryByOrdinal.get(occurrence.ordinal);
-      if (!cut) continue;
-
-      const entry = await tx.textVocabularyEntry.findUnique({
-        where: { alignmentId_occurrenceId: { alignmentId: payload.alignmentId, occurrenceId: occurrence.id } },
-      });
-      if (!entry || !entry.selected) {
-        continue;
-      }
-
-      const clip = extractWordClip(decoded, cut.startSample, cut.endSample);
-      const clipBytes = encodeWav(clip);
-      const written = await writeAudioAsset({ textId: job.textId, kind: 'WORD_CLIP', bytes: clipBytes });
-
-      const asset = await tx.audioAsset.create({
-        data: {
-          textId: job.textId,
-          kind: 'WORD_CLIP',
-          storageKey: written.storageKey,
-          mimeType: 'audio/wav',
-          byteLength: written.byteLength,
-          sha256: written.sha256,
-          sampleRate: clip.sampleRate,
-          channels: clip.channels,
-          bitDepth: clip.bitsPerSample,
-          frameCount: clip.frameCount,
-          state: 'READY',
-        },
-      });
-
-      await tx.wordOccurrence.update({
-        where: { id: occurrence.id },
-        data: { cutStartSample: cut.startSample, cutEndSample: cut.endSample },
-      });
-
-      await tx.wordClip.upsert({
-        where: { occurrenceId_extractionVersion: { occurrenceId: occurrence.id, extractionVersion: 1 } },
-        update: {
-          assetId: asset.id,
-          startSample: cut.startSample,
-          endSample: cut.endSample,
-          narrationId: narration.id,
-        },
-        create: {
-          textId: job.textId,
-          narrationId: narration.id,
-          alignmentId: payload.alignmentId,
-          occurrenceId: occurrence.id,
-          entryId: entry.id,
-          assetId: asset.id,
-          startSample: cut.startSample,
-          endSample: cut.endSample,
-          extractionVersion: 1,
-        },
-      });
-    }
-
-    await completeJob(tx, job.id, {});
-  });
 }

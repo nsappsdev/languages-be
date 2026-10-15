@@ -59,8 +59,8 @@ model LessonItem {
   lesson            Lesson                  @relation(fields: [lessonId], references: [id])
   order             Int
   text              String
-  audioUrl          String
-  segments          Json
+  audioUrl          String                  @default("")
+  segments          Json                    @default("[]")
   wordTimings       Json                    @default("[]")
   sentenceTimings   Json                    @default("[]")
   chunkTimings      Json                    @default("[]")
@@ -224,8 +224,7 @@ model AppSettings {
 }
 
 // ---------------------------------------------------------------------------
-// Text/audio authoring (additive, admin-only). See B/docs/text-audio-authoring.md.
-// Every model below is new; nothing here is read by existing learner routes.
+// Authoritative text authoring and immutable learner delivery.
 // ---------------------------------------------------------------------------
 
 model TextWorkspace {

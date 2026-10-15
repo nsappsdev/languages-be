@@ -1,0 +1,40 @@
+# Caddyfile — TLS reverse proxy for the Language App
+#
+# Single hostname, path-based routing (mirrors the previous nginx.conf layout):
+#   https://<NSAPP_DOMAIN>/api/*            -> languages-api:3000
+#   https://<NSAPP_DOMAIN>/admin*           -> languages-admin:3000
+#   https://<NSAPP_DOMAIN>/health           -> 200 "ok"
+#
+# The {$NSAPP_DOMAIN} placeholder is substituted from the environment at
+# container start (Caddy reads env vars). Set NSAPP_DOMAIN in /opt/nsapp/.env
+# on the server before `docker compose up -d`.
+#
+# Caddy automatically provisions a Let's Encrypt certificate for NSAPP_DOMAIN
+# on first start and redirects HTTP -> HTTPS with no extra config.
+
+{$NSAPP_DOMAIN} {
+	encode gzip zstd
+
+	handle /health {
+		respond "ok" 200
+	}
+
+	handle /api/* {
+		reverse_proxy languages-api:3000
+	}
+
+	handle /admin* {
+		reverse_proxy languages-admin:3000 {
+			header_up X-Forwarded-Prefix /admin
+		}
+	}
+
+	handle / {
+		root * /srv/landing
+		file_server
+	}
+
+	handle {
+		respond "Not found" 404
+	}
+}

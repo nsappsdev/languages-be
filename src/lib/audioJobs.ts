@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { AudioJobKind, Prisma, PrismaClient } from '@prisma/client';
+import { lockText } from './authoringTransaction';
 
 /**
  * Minimal durable job lifecycle backed by the `AudioJob` Postgres table.
@@ -166,17 +167,22 @@ export async function failJob(
   });
 }
 
-/** Local retry (never re-dispatches a paid provider call by itself). */
+/** Explicit retry of a provider-declared safe failure. Never retries an unknown charge outcome. */
 export async function requeueJob(prisma: PrismaClient, jobId: string) {
-  const job = await prisma.audioJob.findUnique({ where: { id: jobId } });
-  if (!job) {
-    throw new Error('Job not found');
-  }
-  if (job.status !== 'FAILED' || !job.retryable) {
-    throw new JobConflictError('Job is not in a retryable failed state');
-  }
-  return prisma.audioJob.update({
-    where: { id: jobId },
-    data: { status: 'QUEUED', errorCode: null, errorMessage: null },
+  return prisma.$transaction(async tx => {
+    const reference = await tx.audioJob.findUnique({ where: { id: jobId } });
+    if (!reference) throw new JobConflictError('Job not found');
+    await lockText(tx, reference.textId);
+    const job = await tx.audioJob.findUniqueOrThrow({ where: { id: jobId } });
+    if (job.status !== 'FAILED' || !job.retryable) throw new JobConflictError('Job is not in a retryable failed state');
+    const workspace = await tx.textWorkspace.findUniqueOrThrow({ where: { textId: job.textId } });
+    const payload = job.requestPayload as { contentRevisionId?: string };
+    if (job.kind === 'GENERATE_NARRATION') {
+      if (workspace.currentContentRevisionId !== payload.contentRevisionId) throw new JobConflictError('Text has changed. Generate narration for the current text.');
+      const active = await tx.audioJob.findFirst({ where: { textId: job.textId, kind: job.kind, status: { in: ['QUEUED', 'RUNNING'] } } });
+      if (active) throw new JobConflictError('Narration is already in progress');
+      await tx.textWorkspace.update({ where: { textId: job.textId }, data: { currentNarrationId: null, currentAlignmentId: null, approvedTextReleaseId: null, draftVersion: { increment: 1 } } });
+    }
+    return tx.audioJob.update({ where: { id: jobId }, data: { status: 'QUEUED', errorCode: null, errorMessage: null } });
   });
 }

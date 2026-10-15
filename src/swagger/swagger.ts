@@ -1,79 +1,25 @@
 import swaggerJsdoc from 'swagger-jsdoc';
 import { config } from '../config';
 
-const swaggerDefinition = {
+const definition = {
   openapi: '3.0.3',
   info: {
     title: 'Language App API',
     version: '1.0.0',
-    description: 'Authentication and content endpoints for admin and mobile clients.',
+    description: 'Authentication and content endpoints for admin and mobile clients.'
   },
-  servers: [
-    {
-      url: `http://localhost:${config.port}/api`,
-    },
-  ],
+  servers: [ { url: 'http://localhost:4000/api' } ],
   components: {
-    securitySchemes: {
-      bearerAuth: {
-        type: 'http',
-        scheme: 'bearer',
-        bearerFormat: 'JWT',
-      },
-    },
+    securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' } },
     schemas: {
-      LessonItemSegment: {
-        type: 'object',
-        properties: {
-          id: { type: 'string' },
-          text: { type: 'string' },
-          startMs: { type: 'integer', example: 0 },
-          endMs: { type: 'integer', example: 1800 },
-        },
-      },
-      LessonItemWordTiming: {
-        type: 'object',
-        properties: {
-          id: { type: 'string' },
-          text: { type: 'string' },
-          normalizedText: { type: 'string' },
-          startMs: { type: 'integer', example: 0 },
-          endMs: { type: 'integer', example: 350 },
-          order: { type: 'integer' },
-        },
-      },
-      LessonItemChunkTiming: {
-        type: 'object',
-        properties: {
-          id: { type: 'string' },
-          text: { type: 'string', example: 'in the fall' },
-          normalizedText: { type: 'string', example: 'in the fall' },
-          startMs: { type: 'integer', example: 1200 },
-          endMs: { type: 'integer', example: 1850 },
-          wordMarkIds: { type: 'array', items: { type: 'string' } },
-          order: { type: 'integer' },
-        },
-      },
       LessonItem: {
         type: 'object',
         properties: {
           id: { type: 'string' },
-          text: { type: 'string' },
-          audioUrl: { type: 'string', example: '/media/audio/greetings-1.wav' },
+          lessonId: { type: 'string' },
           order: { type: 'integer' },
-          segments: {
-            type: 'array',
-            items: { $ref: '#/components/schemas/LessonItemSegment' },
-          },
-          wordTimings: {
-            type: 'array',
-            items: { $ref: '#/components/schemas/LessonItemWordTiming' },
-          },
-          chunkTimings: {
-            type: 'array',
-            items: { $ref: '#/components/schemas/LessonItemChunkTiming' },
-          },
-        },
+          text: { type: 'string', description: 'Current content revision text' }
+        }
       },
       Lesson: {
         type: 'object',
@@ -81,49 +27,37 @@ const swaggerDefinition = {
           id: { type: 'string' },
           title: { type: 'string' },
           description: { type: 'string', nullable: true },
-          status: { type: 'string', enum: ['DRAFT', 'PUBLISHED'] },
+          status: {
+            type: 'string',
+            enum: [ 'DRAFT', 'PUBLISHED' ],
+            description: 'Derived from currentPublicationId'
+          },
           createdAt: { type: 'string', format: 'date-time' },
           updatedAt: { type: 'string', format: 'date-time' },
-          items: {
-            type: 'array',
-            items: { $ref: '#/components/schemas/LessonItem' },
-          },
-        },
+          items: { type: 'array', items: { '$ref': '#/components/schemas/LessonItem' } },
+          currentPublicationId: { type: 'string', nullable: true }
+        }
       },
       LessonItemRequest: {
         type: 'object',
-        properties: {
-          id: { type: 'string' },
-          text: { type: 'string' },
-          audioUrl: { type: 'string', example: '/media/audio/greetings-1.wav' },
-          order: { type: 'integer' },
-          segments: {
-            type: 'array',
-            items: { $ref: '#/components/schemas/LessonItemSegment' },
-          },
-          wordTimings: {
-            type: 'array',
-            items: { $ref: '#/components/schemas/LessonItemWordTiming' },
-          },
-          chunkTimings: {
-            type: 'array',
-            items: { $ref: '#/components/schemas/LessonItemChunkTiming' },
-          },
-        },
-        required: ['text', 'audioUrl', 'segments'],
+        required: [ 'text' ],
+        additionalProperties: false,
+        properties: { text: { type: 'string', minLength: 1, maxLength: 5000 } }
       },
       LessonRequest: {
         type: 'object',
+        required: [ 'title', 'items' ],
+        additionalProperties: false,
         properties: {
-          title: { type: 'string' },
+          title: { type: 'string', minLength: 2 },
           description: { type: 'string' },
-          status: { type: 'string', enum: ['DRAFT', 'PUBLISHED'] },
           items: {
             type: 'array',
-            items: { $ref: '#/components/schemas/LessonItemRequest' },
-          },
-        },
-        required: ['title'],
+            minItems: 1,
+            maxItems: 100,
+            items: { '$ref': '#/components/schemas/LessonItemRequest' }
+          }
+        }
       },
       User: {
         type: 'object',
@@ -131,112 +65,66 @@ const swaggerDefinition = {
           id: { type: 'string', example: 'user_123' },
           email: { type: 'string', example: 'user@email.com' },
           name: { type: 'string', example: 'Mobile Learner' },
-          role: { type: 'string', example: 'learner' },
-        },
+          role: { type: 'string', example: 'learner' }
+        }
       },
       AuthResponse: {
         type: 'object',
         properties: {
           token: { type: 'string', example: 'jwt-token' },
           refreshToken: { type: 'string', example: 'refresh-token' },
-          user: { $ref: '#/components/schemas/User' },
-        },
+          user: { '$ref': '#/components/schemas/User' }
+        }
       },
       LoginRequest: {
         type: 'object',
-        required: ['email', 'password'],
+        required: [ 'email', 'password' ],
         properties: {
-          email: {
-            type: 'string',
-            format: 'email',
-            example: 'user@email.com',
-          },
-          password: {
-            type: 'string',
-            minLength: 6,
-            example: 'user#666',
-          },
-        },
+          email: { type: 'string', format: 'email', example: 'user@email.com' },
+          password: { type: 'string', minLength: 6, example: 'user#666' }
+        }
       },
       SignupRequest: {
         type: 'object',
-        required: ['name', 'email', 'password'],
+        required: [ 'name', 'email', 'password' ],
         properties: {
-          name: {
-            type: 'string',
-            minLength: 2,
-            maxLength: 80,
-            example: 'Mobile Learner',
-          },
-          email: {
-            type: 'string',
-            format: 'email',
-            example: 'user@email.com',
-          },
-          password: {
-            type: 'string',
-            minLength: 6,
-            example: 'user#666',
-          },
-        },
+          name: { type: 'string', minLength: 2, maxLength: 80, example: 'Mobile Learner' },
+          email: { type: 'string', format: 'email', example: 'user@email.com' },
+          password: { type: 'string', minLength: 6, example: 'user#666' }
+        }
       },
       RefreshRequest: {
         type: 'object',
-        required: ['refreshToken'],
-        properties: {
-          refreshToken: {
-            type: 'string',
-            minLength: 32,
-            example: 'refresh-token',
-          },
-        },
+        required: [ 'refreshToken' ],
+        properties: { refreshToken: { type: 'string', minLength: 32, example: 'refresh-token' } }
       },
       LogoutRequest: {
         type: 'object',
-        properties: {
-          refreshToken: {
-            type: 'string',
-            minLength: 32,
-            example: 'refresh-token',
-          },
-        },
+        properties: { refreshToken: { type: 'string', minLength: 32, example: 'refresh-token' } }
       },
-      MessageResponse: {
-        type: 'object',
-        properties: {
-          message: { type: 'string', example: 'Logged out' },
-        },
-      },
-      ErrorResponse: {
-        type: 'object',
-        properties: {
-          message: { type: 'string', example: 'Invalid credentials' },
-        },
-      },
+      MessageResponse: { type: 'object', properties: { message: { type: 'string', example: 'Logged out' } } },
+      ErrorResponse: { type: 'object', properties: { message: { type: 'string', example: 'Invalid credentials' } } },
       AppVersionPolicy: {
         type: 'object',
         properties: {
-          platform: { type: 'string', enum: ['android', 'ios'] },
+          platform: { type: 'string', enum: [ 'android', 'ios' ] },
           enabled: { type: 'boolean' },
           latestBuildNumber: { type: 'integer', example: 24 },
           minSupportedBuildNumber: { type: 'integer', example: 20 },
           storeUrl: { type: 'string' },
-          message: { type: 'string' },
-        },
+          message: { type: 'string' }
+        }
       },
       AppVersionResponse: {
         type: 'object',
         properties: {
           currentBuildNumber: { type: 'integer', example: 20 },
-          policy: { $ref: '#/components/schemas/AppVersionPolicy' },
+          policy: { '$ref': '#/components/schemas/AppVersionPolicy' },
           update: {
             type: 'object',
-            properties: {
-              available: { type: 'boolean' },
-              required: { type: 'boolean' },
-            },
-          },
-        },
+            properties: { available: { type: 'boolean' }, required: { type: 'boolean' } }
+          }
+        }
       },
       AnalyticsOverview: {
         type: 'object',
@@ -251,71 +139,10 @@ const swaggerDefinition = {
             nullable: true,
             properties: {
               title: { type: 'string', example: 'Ordering Coffee' },
-              publishedAt: { type: 'string', format: 'date-time' },
-            },
-          },
-        },
-      },
-      VocabularyEntry: {
-        type: 'object',
-        properties: {
-          id: { type: 'string' },
-          englishText: { type: 'string' },
-          kind: { type: 'string', enum: ['WORD', 'PHRASE', 'SENTENCE'] },
-          notes: { type: 'string', nullable: true },
-          tags: { type: 'array', items: { type: 'string' } },
-          translations: {
-            type: 'array',
-            items: { $ref: '#/components/schemas/VocabularyTranslation' },
-          },
-        },
-      },
-      VocabularyEntryRequest: {
-        type: 'object',
-        properties: {
-          englishText: { type: 'string' },
-          kind: { type: 'string', enum: ['WORD', 'PHRASE', 'SENTENCE'] },
-          notes: { type: 'string' },
-          tags: { type: 'array', items: { type: 'string' } },
-          translations: {
-            type: 'array',
-            items: { $ref: '#/components/schemas/VocabularyTranslationRequest' },
-          },
-        },
-        required: ['englishText'],
-      },
-      VocabularyTranslation: {
-        type: 'object',
-        properties: {
-          id: { type: 'string' },
-          languageCode: { type: 'string' },
-          translation: { type: 'string' },
-          usageExample: { type: 'string', nullable: true },
-        },
-      },
-      VocabularyTranslationRequest: {
-        type: 'object',
-        properties: {
-          languageCode: { type: 'string' },
-          translation: { type: 'string' },
-          usageExample: { type: 'string' },
-        },
-        required: ['languageCode', 'translation'],
-      },
-      LearnerVocabulary: {
-        type: 'object',
-        properties: {
-          id: { type: 'string' },
-          status: { type: 'string', enum: ['NEW', 'REVIEWING', 'MASTERED'] },
-          entry: { $ref: '#/components/schemas/VocabularyEntry' },
-        },
-      },
-      LearnerVocabularyStatusRequest: {
-        type: 'object',
-        properties: {
-          status: { type: 'string', enum: ['NEW', 'REVIEWING', 'MASTERED'] },
-        },
-        required: ['status'],
+              publishedAt: { type: 'string', format: 'date-time' }
+            }
+          }
+        }
       },
       LearnerProfile: {
         type: 'object',
@@ -326,8 +153,8 @@ const swaggerDefinition = {
           createdAt: { type: 'string', format: 'date-time' },
           updatedAt: { type: 'string', format: 'date-time' },
           vocabularySaved: { type: 'integer' },
-          progressEvents: { type: 'integer' },
-        },
+          progressEvents: { type: 'integer' }
+        }
       },
       LearnerLessonProgressSummary: {
         type: 'object',
@@ -340,966 +167,618 @@ const swaggerDefinition = {
           itemsCompleted: { type: 'integer' },
           bestCompletion: { type: 'integer', nullable: true },
           lastCompletion: { type: 'integer', nullable: true },
-          lastActivityAt: { type: 'string', format: 'date-time' },
-        },
+          lastActivityAt: { type: 'string', format: 'date-time' }
+        }
       },
       LearnerProgressSummaryResponse: {
         type: 'object',
         properties: {
-          learner: { $ref: '#/components/schemas/LearnerProfile' },
-          lessonSummaries: {
-            type: 'array',
-            items: { $ref: '#/components/schemas/LearnerLessonProgressSummary' },
-          },
-        },
+          learner: { '$ref': '#/components/schemas/LearnerProfile' },
+          lessonSummaries: { type: 'array', items: { '$ref': '#/components/schemas/LearnerLessonProgressSummary' } }
+        }
       },
       ProgressEventRequest: {
         type: 'object',
-        required: ['idempotencyKey', 'lessonId', 'eventType'],
+        required: [ 'idempotencyKey', 'lessonId', 'eventType' ],
         properties: {
           idempotencyKey: { type: 'string' },
           lessonId: { type: 'string' },
           lessonItemId: { type: 'string' },
-          eventType: { type: 'string', enum: ['ITEM_STARTED', 'ITEM_COMPLETED', 'LESSON_COMPLETED'] },
+          eventType: { type: 'string', enum: [ 'ITEM_STARTED', 'ITEM_COMPLETED', 'LESSON_COMPLETED' ] },
           completion: { type: 'integer' },
           clientTimestamp: { type: 'string', format: 'date-time' },
-          payload: { type: 'object' },
-        },
-      },
-      UploadedAudioFile: {
-        type: 'object',
-        properties: {
-          audioUrl: { type: 'string', example: '/media/audio/greetings-1-1711141200000-abcd1234.wav' },
-          fileName: { type: 'string' },
-          originalName: { type: 'string' },
-          mimeType: { type: 'string', example: 'audio/wav' },
-          size: { type: 'integer', example: 189630 },
-        },
+          payload: { type: 'object' }
+        }
       },
       ProgressEventsRequest: {
         type: 'object',
-        required: ['events'],
-        properties: {
-          events: {
-            type: 'array',
-            items: { $ref: '#/components/schemas/ProgressEventRequest' },
-          },
-        },
+        required: [ 'events' ],
+        properties: { events: { type: 'array', items: { '$ref': '#/components/schemas/ProgressEventRequest' } } }
       },
       ProgressEventsResponse: {
         type: 'object',
-        properties: {
-          accepted: { type: 'integer' },
-          received: { type: 'integer' },
-        },
-      },
-    },
+        properties: { accepted: { type: 'integer' }, received: { type: 'integer' } }
+      }
+    }
   },
   tags: [
-    {
-      name: 'Auth',
-      description: 'Authentication endpoints for admin and mobile clients.',
-    },
-    {
-      name: 'Lessons',
-      description: 'Lesson and task management.',
-    },
-    {
-      name: 'Analytics',
-      description: 'Admin analytics.',
-    },
-    {
-      name: 'Vocabulary',
-      description: 'Vocabulary library management.',
-    },
-    {
-      name: 'Learners',
-      description: 'Admin learner management.',
-    },
-    {
-      name: 'Progress',
-      description: 'Learner progress ingestion endpoints.',
-    },
-    {
-      name: 'Media',
-      description: 'Admin media upload endpoints.',
-    },
-    {
-      name: 'Settings',
-      description: 'Global app settings and mobile app update policy.',
-    },
+    { name: 'Auth', description: 'Authentication endpoints for admin and mobile clients.' },
+    { name: 'Lessons', description: 'Lesson and task management.' },
+    { name: 'Analytics', description: 'Admin analytics.' },
+    { name: 'Learners', description: 'Admin learner management.' },
+    { name: 'Progress', description: 'Learner progress ingestion endpoints.' },
+    { name: 'Settings', description: 'Global app settings and mobile app update policy.' }
   ],
   paths: {
     '/app-version': {
       get: {
-        tags: ['Settings'],
+        tags: [ 'Settings' ],
         summary: 'Evaluate native app update policy for the current build',
-        security: [{ bearerAuth: [] }],
+        security: [ { bearerAuth: [] } ],
         parameters: [
           {
             name: 'platform',
             in: 'query',
             required: true,
-            schema: { type: 'string', enum: ['android', 'ios'] },
+            schema: { type: 'string', enum: [ 'android', 'ios' ] }
           },
           {
             name: 'buildNumber',
             in: 'query',
             required: true,
-            schema: { type: 'integer', minimum: 0 },
-          },
+            schema: { type: 'integer', minimum: 0 }
+          }
         ],
         responses: {
-          200: {
+          '200': {
             description: 'App version policy decision',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/AppVersionResponse' },
-              },
-            },
-          },
-        },
-      },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/AppVersionResponse' } } }
+          }
+        }
+      }
     },
     '/auth/login': {
       post: {
-        tags: ['Auth'],
+        tags: [ 'Auth' ],
         summary: 'Authenticate user',
         requestBody: {
           required: true,
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/LoginRequest' },
-            },
-          },
+          content: { 'application/json': { schema: { '$ref': '#/components/schemas/LoginRequest' } } }
         },
         responses: {
-          200: {
+          '200': {
             description: 'Authenticated successfully',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/AuthResponse' },
-              },
-            },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/AuthResponse' } } }
           },
-          400: {
+          '400': {
             description: 'Invalid payload',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/ErrorResponse' },
-              },
-            },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } }
           },
-          401: {
+          '401': {
             description: 'Invalid credentials',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/ErrorResponse' },
-              },
-            },
-          },
-        },
-      },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } }
+          }
+        }
+      }
     },
     '/auth/signup': {
       post: {
-        tags: ['Auth'],
+        tags: [ 'Auth' ],
         summary: 'Create learner account',
         requestBody: {
           required: true,
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/SignupRequest' },
-            },
-          },
+          content: { 'application/json': { schema: { '$ref': '#/components/schemas/SignupRequest' } } }
         },
         responses: {
-          201: {
+          '201': {
             description: 'Account created successfully',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/AuthResponse' },
-              },
-            },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/AuthResponse' } } }
           },
-          400: {
+          '400': {
             description: 'Invalid payload',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/ErrorResponse' },
-              },
-            },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } }
           },
-          409: {
+          '409': {
             description: 'Email already registered',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/ErrorResponse' },
-              },
-            },
-          },
-        },
-      },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } }
+          }
+        }
+      }
     },
     '/auth/profile': {
       get: {
-        tags: ['Auth'],
+        tags: [ 'Auth' ],
         summary: 'Get current admin profile',
-        security: [{ bearerAuth: [] }],
+        security: [ { bearerAuth: [] } ],
         responses: {
-          200: {
+          '200': {
             description: 'Current user profile',
             content: {
               'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    user: { $ref: '#/components/schemas/User' },
-                  },
-                },
-              },
-            },
+                schema: { type: 'object', properties: { user: { '$ref': '#/components/schemas/User' } } }
+              }
+            }
           },
-          401: {
+          '401': {
             description: 'Unauthorized',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/ErrorResponse' },
-              },
-            },
-          },
-        },
-      },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } }
+          }
+        }
+      }
     },
     '/auth/refresh': {
       post: {
-        tags: ['Auth'],
+        tags: [ 'Auth' ],
         summary: 'Refresh access token using refresh token rotation',
         requestBody: {
           required: true,
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/RefreshRequest' },
-            },
-          },
+          content: { 'application/json': { schema: { '$ref': '#/components/schemas/RefreshRequest' } } }
         },
         responses: {
-          200: {
+          '200': {
             description: 'Refreshed successfully',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/AuthResponse' },
-              },
-            },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/AuthResponse' } } }
           },
-          400: {
+          '400': {
             description: 'Invalid payload',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/ErrorResponse' },
-              },
-            },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } }
           },
-          401: {
+          '401': {
             description: 'Invalid or expired refresh token',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/ErrorResponse' },
-              },
-            },
-          },
-        },
-      },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } }
+          }
+        }
+      }
     },
     '/auth/logout': {
       post: {
-        tags: ['Auth'],
+        tags: [ 'Auth' ],
         summary: 'Log out current admin session',
-        security: [{ bearerAuth: [] }],
+        security: [ { bearerAuth: [] } ],
         requestBody: {
           required: false,
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/LogoutRequest' },
-            },
-          },
+          content: { 'application/json': { schema: { '$ref': '#/components/schemas/LogoutRequest' } } }
         },
         responses: {
-          200: {
+          '200': {
             description: 'Logout acknowledged',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/MessageResponse' },
-              },
-            },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/MessageResponse' } } }
           },
-          401: {
+          '401': {
             description: 'Unauthorized',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/ErrorResponse' },
-              },
-            },
-          },
-        },
-      },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } }
+          }
+        }
+      }
     },
     '/lessons': {
       get: {
-        tags: ['Lessons'],
+        tags: [ 'Lessons' ],
         summary: 'List all lessons with ordered lesson items',
-        security: [{ bearerAuth: [] }],
+        security: [ { bearerAuth: [] } ],
         responses: {
-          200: {
+          '200': {
             description: 'Lessons response',
             content: {
               'application/json': {
                 schema: {
                   type: 'object',
-                  properties: {
-                    lessons: {
-                      type: 'array',
-                      items: { $ref: '#/components/schemas/Lesson' },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
+                  properties: { lessons: { type: 'array', items: { '$ref': '#/components/schemas/Lesson' } } }
+                }
+              }
+            }
+          }
+        }
       },
       post: {
-        tags: ['Lessons'],
+        tags: [ 'Lessons' ],
         summary: 'Create a lesson',
-        security: [{ bearerAuth: [] }],
+        security: [ { bearerAuth: [] } ],
         requestBody: {
           required: true,
-          content: { 'application/json': { schema: { $ref: '#/components/schemas/LessonRequest' } } },
+          content: { 'application/json': { schema: { '$ref': '#/components/schemas/LessonRequest' } } }
         },
         responses: {
-          201: {
+          '201': {
             description: 'Lesson created',
             content: {
               'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    lesson: { $ref: '#/components/schemas/Lesson' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
+                schema: { type: 'object', properties: { lesson: { '$ref': '#/components/schemas/Lesson' } } }
+              }
+            }
+          }
+        }
+      }
     },
     '/lessons/{id}': {
       get: {
-        tags: ['Lessons'],
+        tags: [ 'Lessons' ],
         summary: 'Get lesson by ID',
-        security: [{ bearerAuth: [] }],
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        security: [ { bearerAuth: [] } ],
+        parameters: [ { name: 'id', in: 'path', required: true, schema: { type: 'string' } } ],
         responses: {
-          200: {
+          '200': {
             description: 'Lesson detail',
             content: {
               'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    lesson: { $ref: '#/components/schemas/Lesson' },
-                  },
-                },
-              },
-            },
+                schema: { type: 'object', properties: { lesson: { '$ref': '#/components/schemas/Lesson' } } }
+              }
+            }
           },
-          404: {
+          '404': {
             description: 'Lesson not found',
-            content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/ErrorResponse' },
-              },
-            },
-          },
-        },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } }
+          }
+        }
       },
       patch: {
-        tags: ['Lessons'],
+        tags: [ 'Lessons' ],
         summary: 'Update lesson',
-        security: [{ bearerAuth: [] }],
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        security: [ { bearerAuth: [] } ],
+        parameters: [ { name: 'id', in: 'path', required: true, schema: { type: 'string' } } ],
         requestBody: {
           required: true,
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/LessonRequest' },
-            },
-          },
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  title: { type: 'string' },
+                  description: { type: 'string' },
+                  items: {
+                    type: 'array',
+                    items: { type: 'object', required: [ 'id' ], properties: { id: { type: 'string' } } },
+                    description: 'Ordered active text IDs; omitted texts are archived, never deleted'
+                  }
+                }
+              }
+            }
+          }
         },
         responses: {
-          200: {
+          '200': {
             description: 'Lesson updated',
             content: {
               'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    lesson: { $ref: '#/components/schemas/Lesson' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-      delete: {
-        tags: ['Lessons'],
-        summary: 'Delete lesson',
-        security: [{ bearerAuth: [] }],
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-        responses: {
-          204: { description: 'Deleted' },
-          404: {
-            description: 'Lesson not found',
-            content: {
-              'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
-            },
-          },
-        },
-      },
+                schema: { type: 'object', properties: { lesson: { '$ref': '#/components/schemas/Lesson' } } }
+              }
+            }
+          }
+        }
+      }
     },
     '/lessons/{lessonId}/items': {
       post: {
-        tags: ['Lessons'],
+        tags: [ 'Lessons' ],
         summary: 'Create lesson item within lesson',
-        security: [{ bearerAuth: [] }],
-        parameters: [{ name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } }],
+        security: [ { bearerAuth: [] } ],
+        parameters: [ { name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } } ],
         requestBody: {
           required: true,
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/LessonItemRequest' },
-            },
-          },
+          content: { 'application/json': { schema: { '$ref': '#/components/schemas/LessonItemRequest' } } }
         },
         responses: {
-          201: {
+          '201': {
             description: 'Task created',
             content: {
               'application/json': {
                 schema: {
                   type: 'object',
-                  properties: { item: { $ref: '#/components/schemas/LessonItem' } },
-                },
-              },
-            },
+                  properties: { item: { '$ref': '#/components/schemas/LessonItem' } }
+                }
+              }
+            }
           },
-          404: {
+          '404': {
             description: 'Lesson not found',
-            content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-          },
-        },
-      },
-    },
-    '/lessons/{lessonId}/items/{itemId}': {
-      delete: {
-        tags: ['Lessons'],
-        summary: 'Delete lesson item from lesson',
-        security: [{ bearerAuth: [] }],
-        parameters: [
-          { name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } },
-          { name: 'itemId', in: 'path', required: true, schema: { type: 'string' } },
-        ],
-        responses: {
-          204: { description: 'Deleted' },
-          404: {
-            description: 'Lesson item not found',
-            content: {
-              'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
-            },
-          },
-        },
-      },
-    },
-    '/media/audio': {
-      post: {
-        tags: ['Media'],
-        summary: 'Upload lesson audio file',
-        security: [{ bearerAuth: [] }],
-        requestBody: {
-          required: true,
-          content: {
-            'multipart/form-data': {
-              schema: {
-                type: 'object',
-                required: ['file'],
-                properties: {
-                  file: {
-                    type: 'string',
-                    format: 'binary',
-                  },
-                },
-              },
-            },
-          },
-        },
-        responses: {
-          201: {
-            description: 'Audio uploaded',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    file: { $ref: '#/components/schemas/UploadedAudioFile' },
-                  },
-                },
-              },
-            },
-          },
-          400: {
-            description: 'Invalid upload',
-            content: {
-              'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
-            },
-          },
-          403: {
-            description: 'Forbidden',
-            content: {
-              'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
-            },
-          },
-        },
-      },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } }
+          }
+        }
+      }
     },
     '/analytics/overview': {
       get: {
-        tags: ['Analytics'],
+        tags: [ 'Analytics' ],
         summary: 'Get lesson/item summary metrics',
-        security: [{ bearerAuth: [] }],
+        security: [ { bearerAuth: [] } ],
         responses: {
-          200: {
+          '200': {
             description: 'Overview stats',
             content: {
               'application/json': {
                 schema: {
                   type: 'object',
-                  properties: {
-                    stats: { $ref: '#/components/schemas/AnalyticsOverview' },
-                  },
-                },
-              },
-            },
+                  properties: { stats: { '$ref': '#/components/schemas/AnalyticsOverview' } }
+                }
+              }
+            }
           },
-          401: {
+          '401': {
             description: 'Unauthorized',
-            content: {
-              'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
-            },
-          },
-        },
-      },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } }
+          }
+        }
+      }
     },
     '/learners': {
       get: {
-        tags: ['Learners'],
+        tags: [ 'Learners' ],
         summary: 'List learner accounts for admin dashboard',
-        security: [{ bearerAuth: [] }],
+        security: [ { bearerAuth: [] } ],
         responses: {
-          200: {
+          '200': {
             description: 'Learner list',
             content: {
               'application/json': {
                 schema: {
                   type: 'object',
                   properties: {
-                    learners: {
-                      type: 'array',
-                      items: { $ref: '#/components/schemas/LearnerProfile' },
-                    },
-                  },
-                },
-              },
-            },
+                    learners: { type: 'array', items: { '$ref': '#/components/schemas/LearnerProfile' } }
+                  }
+                }
+              }
+            }
           },
-          403: {
+          '403': {
             description: 'Forbidden',
-            content: {
-              'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
-            },
-          },
-        },
-      },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } }
+          }
+        }
+      }
     },
     '/learners/{learnerId}/progress-summary': {
       get: {
-        tags: ['Learners'],
+        tags: [ 'Learners' ],
         summary: 'Get learner progress summary grouped by lesson',
-        security: [{ bearerAuth: [] }],
-        parameters: [
-          {
-            name: 'learnerId',
-            in: 'path',
-            required: true,
-            schema: { type: 'string' },
-          },
-        ],
+        security: [ { bearerAuth: [] } ],
+        parameters: [ { name: 'learnerId', in: 'path', required: true, schema: { type: 'string' } } ],
         responses: {
-          200: {
+          '200': {
             description: 'Learner progress summary',
             content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/LearnerProgressSummaryResponse' },
-              },
-            },
+              'application/json': { schema: { '$ref': '#/components/schemas/LearnerProgressSummaryResponse' } }
+            }
           },
-          403: {
+          '403': {
             description: 'Forbidden',
-            content: {
-              'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
-            },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } }
           },
-          404: {
+          '404': {
             description: 'Learner not found',
-            content: {
-              'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
-            },
-          },
-        },
-      },
-    },
-    '/vocabulary': {
-      get: {
-        tags: ['Vocabulary'],
-        summary: 'List vocabulary entries',
-        security: [{ bearerAuth: [] }],
-        responses: {
-          200: {
-            description: 'Entries list',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    entries: {
-                      type: 'array',
-                      items: { $ref: '#/components/schemas/VocabularyEntry' },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-      post: {
-        tags: ['Vocabulary'],
-        summary: 'Create vocabulary entry',
-        security: [{ bearerAuth: [] }],
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/VocabularyEntryRequest' },
-            },
-          },
-        },
-        responses: {
-          201: {
-            description: 'Entry created',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: { entry: { $ref: '#/components/schemas/VocabularyEntry' } },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    '/vocabulary/{id}': {
-      get: {
-        tags: ['Vocabulary'],
-        summary: 'Get entry by id',
-        security: [{ bearerAuth: [] }],
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-        responses: {
-          200: {
-            description: 'Entry detail',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: { entry: { $ref: '#/components/schemas/VocabularyEntry' } },
-                },
-              },
-            },
-          },
-          404: {
-            description: 'Not found',
-            content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-          },
-        },
-      },
-      patch: {
-        tags: ['Vocabulary'],
-        summary: 'Update entry',
-        security: [{ bearerAuth: [] }],
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/VocabularyEntryRequest' },
-            },
-          },
-        },
-        responses: {
-          200: {
-            description: 'Updated entry',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: { entry: { $ref: '#/components/schemas/VocabularyEntry' } },
-                },
-              },
-            },
-          },
-        },
-      },
-      delete: {
-        tags: ['Vocabulary'],
-        summary: 'Delete entry',
-        security: [{ bearerAuth: [] }],
-        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
-        responses: {
-          204: { description: 'Deleted' },
-          404: {
-            description: 'Not found',
-            content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-          },
-        },
-      },
-    },
-    '/vocabulary/{entryId}/translations': {
-      post: {
-        tags: ['Vocabulary'],
-        summary: 'Add translation to entry',
-        security: [{ bearerAuth: [] }],
-        parameters: [{ name: 'entryId', in: 'path', required: true, schema: { type: 'string' } }],
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/VocabularyTranslationRequest' },
-            },
-          },
-        },
-        responses: {
-          201: {
-            description: 'Translation created',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: { translation: { $ref: '#/components/schemas/VocabularyTranslation' } },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    '/vocabulary/{entryId}/translations/{translationId}': {
-      patch: {
-        tags: ['Vocabulary'],
-        summary: 'Update translation',
-        security: [{ bearerAuth: [] }],
-        parameters: [
-          { name: 'entryId', in: 'path', required: true, schema: { type: 'string' } },
-          { name: 'translationId', in: 'path', required: true, schema: { type: 'string' } },
-        ],
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/VocabularyTranslationRequest' },
-            },
-          },
-        },
-        responses: {
-          200: {
-            description: 'Updated translation',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: { translation: { $ref: '#/components/schemas/VocabularyTranslation' } },
-                },
-              },
-            },
-          },
-          404: {
-            description: 'Not found',
-            content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-          },
-        },
-      },
-      delete: {
-        tags: ['Vocabulary'],
-        summary: 'Delete translation',
-        security: [{ bearerAuth: [] }],
-        parameters: [
-          { name: 'entryId', in: 'path', required: true, schema: { type: 'string' } },
-          { name: 'translationId', in: 'path', required: true, schema: { type: 'string' } },
-        ],
-        responses: {
-          204: { description: 'Deleted' },
-          404: {
-            description: 'Not found',
-            content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-          },
-        },
-      },
-    },
-    '/me/vocabulary': {
-      get: {
-        tags: ['Vocabulary'],
-        summary: 'List learner saved vocabulary',
-        security: [{ bearerAuth: [] }],
-        responses: {
-          200: {
-            description: 'Learner vocabulary list',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: {
-                    vocabulary: {
-                      type: 'array',
-                      items: { $ref: '#/components/schemas/LearnerVocabulary' },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
-    '/me/vocabulary/{entryId}': {
-      post: {
-        tags: ['Vocabulary'],
-        summary: 'Save entry to learner library',
-        security: [{ bearerAuth: [] }],
-        parameters: [{ name: 'entryId', in: 'path', required: true, schema: { type: 'string' } }],
-        responses: {
-          201: {
-            description: 'Saved entry',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: { vocabulary: { $ref: '#/components/schemas/LearnerVocabulary' } },
-                },
-              },
-            },
-          },
-          404: {
-            description: 'Entry not found',
-            content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-          },
-        },
-      },
-      patch: {
-        tags: ['Vocabulary'],
-        summary: 'Update learner word status',
-        security: [{ bearerAuth: [] }],
-        parameters: [{ name: 'entryId', in: 'path', required: true, schema: { type: 'string' } }],
-        requestBody: {
-          required: true,
-          content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/LearnerVocabularyStatusRequest' },
-            },
-          },
-        },
-        responses: {
-          200: {
-            description: 'Updated entry',
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  properties: { vocabulary: { $ref: '#/components/schemas/LearnerVocabulary' } },
-                },
-              },
-            },
-          },
-          404: {
-            description: 'Not found',
-            content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-          },
-        },
-      },
-      delete: {
-        tags: ['Vocabulary'],
-        summary: 'Remove entry from learner library',
-        security: [{ bearerAuth: [] }],
-        parameters: [{ name: 'entryId', in: 'path', required: true, schema: { type: 'string' } }],
-        responses: {
-          204: { description: 'Removed' },
-          404: {
-            description: 'Not found',
-            content: { 'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } } },
-          },
-        },
-      },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } }
+          }
+        }
+      }
     },
     '/me/progress/events': {
       post: {
-        tags: ['Progress'],
+        tags: [ 'Progress' ],
         summary: 'Ingest batched learner progress events',
-        security: [{ bearerAuth: [] }],
+        security: [ { bearerAuth: [] } ],
         requestBody: {
           required: true,
           content: {
-            'application/json': {
-              schema: { $ref: '#/components/schemas/ProgressEventsRequest' },
-            },
-          },
+            'application/json': { schema: { '$ref': '#/components/schemas/ProgressEventsRequest' } }
+          }
         },
         responses: {
-          202: {
+          '202': {
             description: 'Batch accepted',
             content: {
-              'application/json': {
-                schema: { $ref: '#/components/schemas/ProgressEventsResponse' },
-              },
-            },
+              'application/json': { schema: { '$ref': '#/components/schemas/ProgressEventsResponse' } }
+            }
           },
-          400: {
+          '400': {
             description: 'Invalid payload',
-            content: {
-              'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
-            },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } }
           },
-          403: {
+          '403': {
             description: 'Forbidden',
-            content: {
-              'application/json': { schema: { $ref: '#/components/schemas/ErrorResponse' } },
-            },
-          },
-        },
-      },
+            content: { 'application/json': { schema: { '$ref': '#/components/schemas/ErrorResponse' } } }
+          }
+        }
+      }
     },
-  },
+    '/admin/lessons/{lessonId}/publish': {
+      post: {
+        tags: [ 'Text authoring' ],
+        summary: 'Atomically publish all current texts; extract missing clips from existing narration',
+        security: [ { bearerAuth: [] } ],
+        parameters: [ { name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } } ],
+        responses: {
+          '200': { description: 'Idempotent replay of current publication' },
+          '201': {
+            description: 'Published and immediately visible through GET /learner/lessons',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    publicationId: { type: 'string' },
+                    replay: { type: 'boolean' },
+                    status: { type: 'string', enum: [ 'PUBLISHED' ] }
+                  }
+                }
+              }
+            }
+          },
+          '422': {
+            description: 'No partial publication: { code: LESSON_NOT_READY, message, texts: [{ textId, order, readiness, message? }] }'
+          }
+        },
+        requestBody: {
+          required: false,
+          content: { 'application/json': { schema: { type: 'object', additionalProperties: false } } }
+        }
+      }
+    },
+    '/admin/lessons/{lessonId}/unpublish': {
+      post: {
+        tags: [ 'Text authoring' ],
+        summary: 'Withdraw the lesson and its prior publications',
+        security: [ { bearerAuth: [] } ],
+        parameters: [ { name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } } ],
+        responses: {
+          '200': { description: 'Success' },
+          '401': { description: 'Authentication required' },
+          '403': { description: 'Admin access required' }
+        }
+      }
+    },
+    '/admin/lessons/{lessonId}/texts/{textId}': {
+      get: {
+        tags: [ 'Text authoring' ],
+        summary: 'Load saved text, narration, alignment and active narration job',
+        security: [ { bearerAuth: [] } ],
+        parameters: [
+          { name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'textId', in: 'path', required: true, schema: { type: 'string' } }
+        ],
+        responses: {
+          '200': { description: 'Success' },
+          '401': { description: 'Authentication required' },
+          '403': { description: 'Admin access required' }
+        }
+      }
+    },
+    '/admin/lessons/{lessonId}/texts/{textId}/content-revisions': {
+      post: {
+        tags: [ 'Text authoring' ],
+        summary: 'Save authoritative text; invalidate narration, alignment and selections',
+        security: [ { bearerAuth: [] } ],
+        parameters: [
+          { name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'textId', in: 'path', required: true, schema: { type: 'string' } }
+        ],
+        responses: {
+          '200': { description: 'Success' },
+          '401': { description: 'Authentication required' },
+          '403': { description: 'Admin access required' }
+        }
+      }
+    },
+    '/admin/lessons/{lessonId}/texts/{textId}/narration-jobs': {
+      post: {
+        tags: [ 'Text authoring' ],
+        summary: 'Explicitly request ElevenLabs narration; Idempotency-Key required',
+        security: [ { bearerAuth: [] } ],
+        parameters: [
+          { name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'textId', in: 'path', required: true, schema: { type: 'string' } }
+        ],
+        responses: {
+          '200': { description: 'Success' },
+          '401': { description: 'Authentication required' },
+          '403': { description: 'Admin access required' }
+        }
+      }
+    },
+    '/admin/lessons/{lessonId}/texts/{textId}/occurrences': {
+      get: {
+        tags: [ 'Text authoring' ],
+        summary: 'Current aligned word occurrences and contextual translations',
+        security: [ { bearerAuth: [] } ],
+        parameters: [
+          { name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'textId', in: 'path', required: true, schema: { type: 'string' } }
+        ],
+        responses: {
+          '200': { description: 'Success' },
+          '401': { description: 'Authentication required' },
+          '403': { description: 'Admin access required' }
+        }
+      }
+    },
+    '/admin/lessons/{lessonId}/texts/{textId}/selection': {
+      patch: {
+        tags: [ 'Text authoring' ],
+        summary: 'Select learning occurrences',
+        security: [ { bearerAuth: [] } ],
+        parameters: [
+          { name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'textId', in: 'path', required: true, schema: { type: 'string' } }
+        ],
+        responses: {
+          '200': { description: 'Success' },
+          '401': { description: 'Authentication required' },
+          '403': { description: 'Admin access required' }
+        }
+      }
+    },
+    '/admin/lessons/{lessonId}/texts/{textId}/readiness': {
+      get: {
+        tags: [ 'Text authoring' ],
+        summary: 'Check publication readiness; missing clips are prepared on Publish',
+        security: [ { bearerAuth: [] } ],
+        parameters: [
+          { name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'textId', in: 'path', required: true, schema: { type: 'string' } }
+        ],
+        responses: {
+          '200': { description: 'Success' },
+          '401': { description: 'Authentication required' },
+          '403': { description: 'Admin access required' }
+        }
+      }
+    },
+    '/admin/lessons/{lessonId}/texts/{textId}/vocabulary/{entryId}': {
+      patch: {
+        tags: [ 'Text authoring' ],
+        summary: 'Save contextual translations; Armenian language code is hy',
+        security: [ { bearerAuth: [] } ],
+        parameters: [
+          { name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'textId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'entryId', in: 'path', required: true, schema: { type: 'string' } }
+        ],
+        responses: {
+          '200': { description: 'Success' },
+          '401': { description: 'Authentication required' },
+          '403': { description: 'Admin access required' }
+        }
+      }
+    },
+    '/learner/lessons': {
+      get: {
+        tags: [ 'Text authoring' ],
+        summary: 'List current published lessons',
+        security: [ { bearerAuth: [] } ],
+        parameters: [],
+        responses: {
+          '200': { description: 'Success' },
+          '401': { description: 'Authentication required' },
+          '403': { description: 'Admin access required' }
+        }
+      }
+    },
+    '/learner/lessons/{lessonId}/manifest': {
+      get: {
+        tags: [ 'Text authoring' ],
+        summary: 'Load immutable reader manifest, word state and progress',
+        security: [ { bearerAuth: [] } ],
+        parameters: [ { name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } } ],
+        responses: {
+          '200': { description: 'Success' },
+          '401': { description: 'Authentication required' },
+          '403': { description: 'Admin access required' }
+        }
+      }
+    },
+    '/learner/audio-assets/{assetId}/content': {
+      get: {
+        tags: [ 'Text authoring' ],
+        summary: 'Authenticated audio from publicationId query parameter; supports byte ranges',
+        security: [ { bearerAuth: [] } ],
+        parameters: [ { name: 'assetId', in: 'path', required: true, schema: { type: 'string' } } ],
+        responses: {
+          '200': { description: 'Success' },
+          '401': { description: 'Authentication required' },
+          '403': { description: 'Admin access required' }
+        }
+      }
+    }
+  }
 };
-
-export const swaggerSpec = swaggerJsdoc({
-  definition: swaggerDefinition,
-  apis: [],
-});
+definition.servers = [{ url: `http://localhost:${config.port}/api` }];
+export const swaggerSpec = swaggerJsdoc({ definition, apis: [] });

@@ -4,7 +4,7 @@ import path from 'path';
 
 /**
  * Private filesystem storage for text-authoring audio assets, deliberately
- * kept outside `public/` (which is served statically at `/media`). Assets
+ * kept outside any public web directory. Assets
  * are addressed by opaque storage keys, never client-supplied paths.
  */
 

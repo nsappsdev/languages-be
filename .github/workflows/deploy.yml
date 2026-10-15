@@ -58,7 +58,6 @@ jobs:
           SMTP_PASS: ${{ secrets.SMTP_PASS }}
           SMTP_FROM: ${{ secrets.SMTP_FROM }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           ELEVENLABS_DEFAULT_VOICE_ID: ${{ secrets.ELEVENLABS_DEFAULT_VOICE_ID }}
         with:
@@ -66,7 +65,7 @@ jobs:
           username: ${{ secrets.DO_SSH_USER }}
           key: ${{ secrets.DO_SSH_KEY }}
           port: ${{ secrets.DO_SSH_PORT || '22' }}
-          envs: GHCR_USERNAME,GHCR_PAT,SMTP_PASS,SMTP_FROM,APP_BASE_URL,OPENAI_API_KEY,ELEVENLABS_API_KEY,ELEVENLABS_DEFAULT_VOICE_ID
+          envs: GHCR_USERNAME,GHCR_PAT,SMTP_PASS,SMTP_FROM,APP_BASE_URL,ELEVENLABS_API_KEY,ELEVENLABS_DEFAULT_VOICE_ID
           script: |
             set -e
             cd /opt/nsapp
@@ -94,7 +93,6 @@ jobs:
             upsert_env SMTP_PASS "$SMTP_PASS"
             upsert_env SMTP_FROM "$SMTP_FROM"
             upsert_env APP_BASE_URL "$APP_BASE_URL"
-            upsert_env OPENAI_API_KEY "$OPENAI_API_KEY"
             upsert_env ELEVENLABS_API_KEY "$ELEVENLABS_API_KEY"
             upsert_env ELEVENLABS_DEFAULT_VOICE_ID "$ELEVENLABS_DEFAULT_VOICE_ID"
             upsert_env AUDIO_WORKER_ENABLED "true"
