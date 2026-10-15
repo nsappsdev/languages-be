@@ -25,7 +25,6 @@ COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/package*.json ./
 COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --from=builder --chown=node:node /app/prisma ./prisma
-COPY --from=builder --chown=node:node /app/public ./public
 RUN install -d -o node -g node -m 0750 /app/var/audio-authoring
 
 EXPOSE 3000

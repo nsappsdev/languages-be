@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { lockText } from './authoringTransaction';
 import { TextWorkspaceError } from './textWorkspaces';
 
 /**
@@ -18,9 +19,10 @@ export async function setSelection(
   params: { textId: string; alignmentId: string; changes: SelectionChange[] },
 ) {
   return prisma.$transaction(async (tx) => {
-    await tx.textWorkspace.update({ where: { textId: params.textId }, data: { draftVersion: { increment: 1 }, approvedTextReleaseId: null } });
+    await lockText(tx, params.textId);
+    const workspace = await tx.textWorkspace.update({ where: { textId: params.textId }, data: { draftVersion: { increment: 1 }, approvedTextReleaseId: null } });
     const alignment = await tx.textAlignment.findFirst({ where: { id: params.alignmentId, textId: params.textId } });
-    if (!alignment) {
+    if (!alignment || workspace.currentAlignmentId !== alignment.id) {
       throw new TextWorkspaceError('ALIGNMENT_NOT_FOUND', 'Alignment does not belong to this text');
     }
 
@@ -75,13 +77,14 @@ export async function setTranslations(
   params: { entryId: string; textId: string; translations: TranslationInput[] },
 ) {
   return prisma.$transaction(async (tx) => {
-    await tx.textWorkspace.update({ where: { textId: params.textId }, data: { draftVersion: { increment: 1 }, approvedTextReleaseId: null } });
+    await lockText(tx, params.textId);
+    const workspace = await tx.textWorkspace.update({ where: { textId: params.textId }, data: { draftVersion: { increment: 1 }, approvedTextReleaseId: null } });
     const entry = await tx.textVocabularyEntry.findFirst({ where: { id: params.entryId, textId: params.textId } });
-    if (!entry) {
+    if (!entry || entry.archivedAt || entry.alignmentId !== workspace.currentAlignmentId) {
       throw new TextWorkspaceError('ENTRY_NOT_FOUND', 'Vocabulary entry does not belong to this text');
     }
 
-    const languageCodes = params.translations.map((t) => t.languageCode);
+    const languageCodes = params.translations.map((t) => t.languageCode === 'am' ? 'hy' : t.languageCode);
     if (new Set(languageCodes).size !== languageCodes.length) {
       throw new TextWorkspaceError('DUPLICATE_LANGUAGE', 'Each language may only appear once per entry');
     }
@@ -91,7 +94,7 @@ export async function setTranslations(
       await tx.textVocabularyTranslation.createMany({
         data: params.translations.map((t) => ({
           entryId: params.entryId,
-          languageCode: t.languageCode,
+          languageCode: t.languageCode === 'am' ? 'hy' : t.languageCode,
           translation: t.translation,
           usageExample: t.usageExample ?? null,
         })),

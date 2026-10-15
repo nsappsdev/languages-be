@@ -1,0 +1,83 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: nsapp-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: nsapp
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - /opt/nsapp/data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nsapp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - nsapp
+
+  languages-api:
+    image: ghcr.io/nsappsdev/languages-be:latest
+    container_name: languages-api
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${LANGUAGES_DATABASE_URL}
+      NODE_ENV: production
+      PORT: 3000
+      JWT_SECRET: ${LANGUAGES_JWT_SECRET}
+      JWT_ACCESS_TOKEN_TTL: ${LANGUAGES_JWT_ACCESS_TOKEN_TTL}
+      JWT_REFRESH_TOKEN_TTL: ${LANGUAGES_JWT_REFRESH_TOKEN_TTL}
+      ALLOWED_ORIGINS: ${LANGUAGES_ALLOWED_ORIGINS}
+      APP_BASE_URL: ${APP_BASE_URL:-https://lezoo.app}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY}
+      ELEVENLABS_DEFAULT_VOICE_ID: ${ELEVENLABS_DEFAULT_VOICE_ID}
+      AUDIO_WORKER_ENABLED: ${AUDIO_WORKER_ENABLED:-true}
+      AUDIO_WORKER_POLL_INTERVAL_MS: ${AUDIO_WORKER_POLL_INTERVAL_MS:-2000}
+      AUDIO_AUTHORING_STORAGE_ROOT: /app/var/audio-authoring
+      SMTP_PASS: ${SMTP_PASS}
+      SMTP_FROM: ${SMTP_FROM:-noreply@lezoo.app}
+    volumes:
+      - /opt/nsapp/data/audio-authoring:/app/var/audio-authoring
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nsapp
+
+  languages-admin:
+    image: ghcr.io/nsappsdev/languages-admin-fe:latest
+    container_name: languages-admin
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+      NEXT_BASE_PATH: /admin
+    networks:
+      - nsapp
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: nsapp-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      NSAPP_DOMAIN: ${NSAPP_DOMAIN}
+    volumes:
+      - /opt/nsapp/infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /opt/nsapp/infra/landing:/srv/landing:ro
+      - /opt/nsapp/data/caddy:/data
+      - /opt/nsapp/data/caddy-config:/config
+    depends_on:
+      - languages-api
+      - languages-admin
+    networks:
+      - nsapp
+
+networks:
+  nsapp:
+    driver: bridge

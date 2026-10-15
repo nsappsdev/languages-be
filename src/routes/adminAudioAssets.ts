@@ -19,7 +19,7 @@ function requireAdmin(req: AuthenticatedRequest, res: Response): boolean {
 
 /**
  * Streams a private authoring audio asset. Never exposed via the public
- * `/media` static route; requires the same bearer auth as every other admin
+ * public static serving; requires the same bearer auth as every other admin
  * endpoint and resolves only opaque asset IDs, never client-supplied paths.
  */
 router.get('/admin/audio-assets/:assetId/content', authenticate, async (req: AuthenticatedRequest, res) => {

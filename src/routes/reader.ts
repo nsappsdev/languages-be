@@ -3,16 +3,17 @@ import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { authenticate, AuthenticatedRequest } from '../middleware/authenticate';
 import { prisma } from '../lib/prisma';
-import { ReaderReleaseError, inspectReaderDraft, readerAssetIds, validReaderAsset } from '../lib/readerRelease';
+import { ReaderReleaseError } from '../lib/readerRelease';
 import { servePrivateAudio } from '../lib/servePrivateAudio';
-import { ReaderManifest, ReaderText } from '../types/reader';
-import { computeRequestHash } from '../lib/audioJobs';
+import { ReaderManifest } from '../types/reader';
+import { publishLesson } from '../lib/lessonPublication';
+import { lockLesson } from '../lib/authoringTransaction';
 
 const router = Router();
 const run = (handler: (req: AuthenticatedRequest, res: Response) => Promise<unknown>) =>
   (req: AuthenticatedRequest, res: Response, _next: NextFunction) => {
     void handler(req, res).catch(error => {
-      if (error instanceof ReaderReleaseError) return res.status(error.status).json({ message: error.message });
+      if (error instanceof ReaderReleaseError) return res.status(error.status).json({ message: error.message, ...error.details });
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034')
         return res.status(409).json({ message: 'Content changed. Reload and try again.' });
       return res.status(500).json({ message: 'Unable to load reader content' });
@@ -22,52 +23,21 @@ function admin(req: AuthenticatedRequest) {
   if (req.user?.role !== 'admin') throw new ReaderReleaseError(403, 'Admin access required');
 }
 
-router.post('/admin/lessons/:lessonId/reader-publications', authenticate, run(async (req, res) => {
+router.post('/admin/lessons/:lessonId/publish', authenticate, run(async (req, res) => {
   admin(req);
-  const parsed = z.object({ textReleaseIds: z.array(z.string().min(1)).min(1) }).safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ message: 'Provide the approved text release IDs' });
-  const publication = await prisma.$transaction(async tx => {
-    const lesson = await tx.lesson.findUnique({ where: { id: req.params.lessonId },
-      include: { items: { where: { archivedAt: null }, orderBy: { order: 'asc' }, include: { textWorkspace: true } } } });
-    if (!lesson) throw new ReaderReleaseError(404, 'Lesson not found');
-    if (!lesson.items.length) throw new ReaderReleaseError(422, 'Add and approve at least one text');
-    const texts: ReaderText[] = [];
-    for (const item of lesson.items) {
-      const id = item.textWorkspace?.approvedTextReleaseId;
-      const release = id ? await tx.textRelease.findUnique({ where: { id } }) : null;
-      if (!release?.manifestSnapshot || release.textId !== item.id)
-        throw new ReaderReleaseError(422, 'Approve every current text version before publishing to mobile');
-      const { readiness, workspace } = await inspectReaderDraft(tx, item.id);
-      if (!readiness.readyForApproval || release.contentRevisionId !== workspace.currentContentRevisionId ||
-        release.narrationId !== workspace.currentNarrationId || release.alignmentId !== workspace.currentAlignmentId)
-        throw new ReaderReleaseError(422, 'A text has changed or its audio is unavailable. Review and approve it again.');
-      texts.push(release.manifestSnapshot as unknown as ReaderText);
-    }
-    if (JSON.stringify(texts.map(t => t.textReleaseId)) !== JSON.stringify(parsed.data.textReleaseIds))
-      throw new ReaderReleaseError(409, 'Approved versions or text order changed. Reload before publishing.');
-    const manifest: ReaderManifest = { schemaVersion: 2, lessonId: lesson.id, title: lesson.title, description: lesson.description, texts };
-    const assetIds = [...new Set(texts.flatMap(readerAssetIds))];
-    const assets = await tx.audioAsset.findMany({ where: { id: { in: assetIds } } });
-    if (assets.length !== assetIds.length || !assets.every(validReaderAsset))
-      throw new ReaderReleaseError(422, 'An approved audio asset is unavailable. Review the text again.');
-    // Repeating the same publication request is harmless and creates no duplicate publication.
-    const previous = lesson.currentPublicationId ? await tx.lessonPublication.findUnique({ where: { id: lesson.currentPublicationId } }) : null;
-    if (previous && !previous.revokedAt && computeRequestHash(previous.manifest) === computeRequestHash(manifest)) return previous;
-    const created = await tx.lessonPublication.create({ data: { lessonId: lesson.id, authorId: req.user!.id,
-      manifest: manifest as any, assetIds } });
-    await tx.lesson.update({ where: { id: lesson.id }, data: { currentPublicationId: created.id } });
-    return created;
-  }, { isolationLevel: 'Serializable', timeout: 15000 });
-  return res.status(201).json({ publicationId: publication.id });
+  if (!z.object({}).strict().safeParse(req.body ?? {}).success) return res.status(400).json({ message: 'Publish does not accept release IDs or draft overrides' });
+  const result = await publishLesson(prisma, req.params.lessonId, req.user!.id);
+  return res.status(result.replay ? 200 : 201).json({ ...result, status: 'PUBLISHED' });
 }));
 
-router.post('/admin/lessons/:lessonId/reader-publications/revoke', authenticate, run(async (req, res) => {
+router.post('/admin/lessons/:lessonId/unpublish', authenticate, run(async (req, res) => {
   admin(req);
-  await prisma.$transaction([
-    prisma.lessonPublication.updateMany({ where: { lessonId: req.params.lessonId, revokedAt: null }, data: { revokedAt: new Date() } }),
-    prisma.lesson.update({ where: { id: req.params.lessonId }, data: { currentPublicationId: null } }),
-  ]);
-  return res.json({ revoked: true });
+  await prisma.$transaction(async tx => {
+    await lockLesson(tx, req.params.lessonId);
+    await tx.lessonPublication.updateMany({ where: { lessonId: req.params.lessonId, revokedAt: null }, data: { revokedAt: new Date() } });
+    await tx.lesson.update({ where: { id: req.params.lessonId }, data: { currentPublicationId: null, publishedAt: null } });
+  });
+  return res.json({ status: 'DRAFT' });
 }));
 
 async function getPublication(id: string) {

@@ -12,7 +12,7 @@ export function installFakeElevenLabsFetch() {
   const realFetch = global.fetch;
   const shim = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
-    if (url.includes('api.elevenlabs.io')) {
+    if (new URL(url).hostname === 'api.elevenlabs.io') {
       const body = JSON.parse(String(init?.body ?? '{}')) as { text: string };
       const text = body.text ?? '';
       const characters = Array.from(text);
@@ -34,6 +34,7 @@ export function installFakeElevenLabsFetch() {
       };
       return new Response(JSON.stringify(responseBody), { status: 200, headers: { 'content-type': 'application/json' } });
     }
+    if (!['127.0.0.1', 'localhost', '[::1]'].includes(new URL(url).hostname)) throw new Error('Test network access is limited to loopback and the synthetic provider mock');
     return realFetch(input as any, init);
   }) as typeof fetch;
 

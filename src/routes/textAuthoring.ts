@@ -5,13 +5,15 @@ import { prisma } from '../lib/prisma';
 import { config } from '../config';
 import { ensureWorkspace, saveContentRevision } from '../lib/textWorkspaces';
 import { setSelection, setTranslations } from '../lib/textVocabulary';
-import crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import { inspectReaderDraft, ReaderReleaseError } from '../lib/readerRelease';
 import { createOrReplayJob, requeueJob, JobConflictError } from '../lib/audioJobs';
 import { TextWorkspaceError } from '../lib/textWorkspaces';
+import { lockText } from '../lib/authoringTransaction';
 
 const router = Router();
+const run = (handler: (req: AuthenticatedRequest, res: Response) => Promise<unknown>) =>
+  (req: AuthenticatedRequest, res: Response) => { void handler(req, res).catch(error => errorResponse(res, error)); };
 
 function requireAdmin(req: AuthenticatedRequest, res: Response): boolean {
   if (!req.user) {
@@ -26,7 +28,7 @@ function requireAdmin(req: AuthenticatedRequest, res: Response): boolean {
 }
 
 async function loadTextContext(lessonId: string, textId: string) {
-  const item = await prisma.lessonItem.findFirst({ where: { id: textId, lessonId } });
+  const item = await prisma.lessonItem.findFirst({ where: { id: textId, lessonId, archivedAt: null }, select: { id: true, lessonId: true } });
   if (!item) return null;
   const workspace = await ensureWorkspace(prisma, textId);
   return { item, workspace };
@@ -48,12 +50,12 @@ function errorResponse(res: Response, error: unknown) {
 router.get(
   '/admin/lessons/:lessonId/texts/:textId',
   authenticate,
-  async (req: AuthenticatedRequest, res) => {
+  run(async (req: AuthenticatedRequest, res) => {
     if (!requireAdmin(req, res)) return;
     const context = await loadTextContext(req.params.lessonId, req.params.textId);
     if (!context) return res.status(404).json({ message: 'Text not found' });
 
-    const [contentRevision, narration, alignment] = await Promise.all([
+    const [contentRevision, narration, alignment, activeJob] = await Promise.all([
       context.workspace.currentContentRevisionId
         ? prisma.textContentRevision.findUnique({ where: { id: context.workspace.currentContentRevisionId } })
         : null,
@@ -63,6 +65,7 @@ router.get(
       context.workspace.currentAlignmentId
         ? prisma.textAlignment.findUnique({ where: { id: context.workspace.currentAlignmentId } })
         : null,
+      prisma.audioJob.findFirst({ where: { textId: context.item.id, kind: 'GENERATE_NARRATION', status: { in: ['QUEUED', 'RUNNING'] } }, select: { id: true } }),
     ]);
 
     return res.json({
@@ -70,7 +73,7 @@ router.get(
         id: context.item.id,
         lessonId: context.item.lessonId,
         draftVersion: context.workspace.draftVersion,
-        legacyText: context.item.text,
+        activeNarrationJobId: activeJob?.id ?? null,
         contentRevision,
         narration: narration
           ? {
@@ -83,22 +86,21 @@ router.get(
             }
           : null,
         alignmentSummary: alignment ? { id: alignment.id, status: alignment.status } : null,
-        approvedTextReleaseId: context.workspace.approvedTextReleaseId,
-        audioGenerationConfigured: Boolean(config.elevenLabs.apiKey),
+        audioGenerationConfigured: Boolean(config.elevenLabs.apiKey && config.elevenLabs.defaultVoiceId),
       },
     });
-  },
+  }),
 );
 
 const contentRevisionSchema = z.object({
-  text: z.string().min(1).max(5000),
+  text: z.string().min(1).max(5000).refine(text => text.trim().length > 0),
   sourceLanguage: z.string().min(2).max(10).default('en'),
 });
 
 router.post(
   '/admin/lessons/:lessonId/texts/:textId/content-revisions',
   authenticate,
-  async (req: AuthenticatedRequest, res) => {
+  run(async (req: AuthenticatedRequest, res) => {
     if (!requireAdmin(req, res)) return;
     const context = await loadTextContext(req.params.lessonId, req.params.textId);
     if (!context) return res.status(404).json({ message: 'Text not found' });
@@ -120,11 +122,10 @@ router.post(
       textVersion: result.workspace.draftVersion,
       invalidation: result.isNoOp ? null : { narration: true, alignment: true, clips: true },
     });
-  },
+  }),
 );
 
 const narrationJobSchema = z.object({
-  expectedVersion: z.number().int().optional(),
   contentRevisionId: z.string().min(1),
   voiceProfileId: z.string().min(1).optional(),
 });
@@ -132,7 +133,7 @@ const narrationJobSchema = z.object({
 router.post(
   '/admin/lessons/:lessonId/texts/:textId/narration-jobs',
   authenticate,
-  async (req: AuthenticatedRequest, res) => {
+  run(async (req: AuthenticatedRequest, res) => {
     if (!requireAdmin(req, res)) return;
     const context = await loadTextContext(req.params.lessonId, req.params.textId);
     if (!context) return res.status(404).json({ message: 'Text not found' });
@@ -161,21 +162,28 @@ router.post(
     const voiceId = parsed.data.voiceProfileId ?? config.elevenLabs.defaultVoiceId;
 
     try {
-      const { job, replay } = await createOrReplayJob(prisma, {
-        textId: context.item.id,
-        kind: 'GENERATE_NARRATION',
-        actorId: req.user!.id,
-        idempotencyKey,
-        requestPayload: { contentRevisionId: parsed.data.contentRevisionId, voiceId },
+      const { job, replay } = await prisma.$transaction(async tx => {
+        await lockText(tx, context.item.id);
+        const workspace = await tx.textWorkspace.findUniqueOrThrow({ where: { textId: context.item.id } });
+        if (workspace.currentContentRevisionId !== parsed.data.contentRevisionId)
+          throw new ReaderReleaseError(409, 'Text changed. Save again before generating narration.');
+        const result = await createOrReplayJob(tx, {
+          textId: context.item.id, kind: 'GENERATE_NARRATION', actorId: req.user!.id, idempotencyKey,
+          requestPayload: { contentRevisionId: parsed.data.contentRevisionId, voiceId },
+        });
+        if (!result.replay) await tx.textWorkspace.update({ where: { textId: context.item.id }, data: {
+          currentNarrationId: null, currentAlignmentId: null, approvedTextReleaseId: null, draftVersion: { increment: 1 },
+        } });
+        return result;
       });
       return res.status(202).json({ job: { id: job.id, status: job.status }, replay });
     } catch (error) {
       return errorResponse(res, error);
     }
-  },
+  }),
 );
 
-router.get('/admin/audio-jobs/:jobId', authenticate, async (req: AuthenticatedRequest, res) => {
+router.get('/admin/audio-jobs/:jobId', authenticate, run(async (req: AuthenticatedRequest, res) => {
   if (!requireAdmin(req, res)) return;
   const job = await prisma.audioJob.findUnique({ where: { id: req.params.jobId } });
   if (!job) return res.status(404).json({ message: 'Job not found' });
@@ -191,9 +199,9 @@ router.get('/admin/audio-jobs/:jobId', authenticate, async (req: AuthenticatedRe
       error: job.errorCode ? { code: job.errorCode, message: job.errorMessage, retryable: job.retryable } : null,
     },
   });
-});
+}));
 
-router.post('/admin/audio-jobs/:jobId/retry', authenticate, async (req: AuthenticatedRequest, res) => {
+router.post('/admin/audio-jobs/:jobId/retry', authenticate, run(async (req: AuthenticatedRequest, res) => {
   if (!requireAdmin(req, res)) return;
   try {
     const job = await requeueJob(prisma, req.params.jobId);
@@ -201,12 +209,12 @@ router.post('/admin/audio-jobs/:jobId/retry', authenticate, async (req: Authenti
   } catch (error) {
     return errorResponse(res, error);
   }
-});
+}));
 
 router.get(
   '/admin/lessons/:lessonId/texts/:textId/occurrences',
   authenticate,
-  async (req: AuthenticatedRequest, res) => {
+  run(async (req: AuthenticatedRequest, res) => {
     if (!requireAdmin(req, res)) return;
     const context = await loadTextContext(req.params.lessonId, req.params.textId);
     if (!context) return res.status(404).json({ message: 'Text not found' });
@@ -218,6 +226,8 @@ router.get(
     const alignment = await prisma.textAlignment.findFirst({ where: { id: alignmentId, textId: context.item.id } });
     if (!alignment) return res.status(404).json({ message: 'Alignment not found for this text' });
 
+    const draft = await inspectReaderDraft(prisma, context.item.id);
+    if (alignmentId !== context.workspace.currentAlignmentId) return res.status(409).json({ message: "Text alignment changed. Reload the text." });
     const [occurrences, entries] = await Promise.all([
       prisma.wordOccurrence.findMany({ where: { alignmentId }, orderBy: { ordinal: 'asc' } }),
       prisma.textVocabularyEntry.findMany({ where: { alignmentId }, include: { translations: true, wordClips: true } }),
@@ -245,11 +255,11 @@ router.get(
           entryId: entry?.id ?? null,
           selected: entry?.selected ?? false,
           translations: entry?.translations ?? [],
-          clipAssetId: entry?.wordClips[0]?.assetId ?? null,
+          clipAssetId: entry ? draft.clips.get(entry.id)?.assetId ?? null : null,
         };
       }),
     });
-  },
+  }),
 );
 
 const selectionSchema = z.object({
@@ -263,7 +273,7 @@ const selectionSchema = z.object({
 router.patch(
   '/admin/lessons/:lessonId/texts/:textId/selection',
   authenticate,
-  async (req: AuthenticatedRequest, res) => {
+  run(async (req: AuthenticatedRequest, res) => {
     if (!requireAdmin(req, res)) return;
     const context = await loadTextContext(req.params.lessonId, req.params.textId);
     if (!context) return res.status(404).json({ message: 'Text not found' });
@@ -283,7 +293,7 @@ router.patch(
     } catch (error) {
       return errorResponse(res, error);
     }
-  },
+  }),
 );
 
 const translationsSchema = z.object({
@@ -301,7 +311,7 @@ const translationsSchema = z.object({
 router.patch(
   '/admin/lessons/:lessonId/texts/:textId/vocabulary/:entryId',
   authenticate,
-  async (req: AuthenticatedRequest, res) => {
+  run(async (req: AuthenticatedRequest, res) => {
     if (!requireAdmin(req, res)) return;
     const context = await loadTextContext(req.params.lessonId, req.params.textId);
     if (!context) return res.status(404).json({ message: 'Text not found' });
@@ -321,60 +331,13 @@ router.patch(
     } catch (error) {
       return errorResponse(res, error);
     }
-  },
-);
-
-const clipJobSchema = z.object({
-  narrationId: z.string().min(1),
-  alignmentId: z.string().min(1),
-  occurrenceIds: z.array(z.string().min(1)).min(1).max(100),
-});
-
-router.post(
-  '/admin/lessons/:lessonId/texts/:textId/clip-jobs',
-  authenticate,
-  async (req: AuthenticatedRequest, res) => {
-    if (!requireAdmin(req, res)) return;
-    const context = await loadTextContext(req.params.lessonId, req.params.textId);
-    if (!context) return res.status(404).json({ message: 'Text not found' });
-
-    const idempotencyKey = req.header('Idempotency-Key');
-    if (!idempotencyKey) {
-      return res.status(400).json({ message: 'Idempotency-Key header is required' });
-    }
-
-    const parsed = clipJobSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
-    }
-
-    if (context.workspace.currentNarrationId !== parsed.data.narrationId) {
-      return res.status(409).json({ message: 'narrationId is not the current narration for this text' });
-    }
-
-    try {
-      const { job, replay } = await createOrReplayJob(prisma, {
-        textId: context.item.id,
-        kind: 'EXTRACT_CLIPS',
-        actorId: req.user!.id,
-        idempotencyKey,
-        requestPayload: {
-          narrationId: parsed.data.narrationId,
-          alignmentId: parsed.data.alignmentId,
-          occurrenceIds: parsed.data.occurrenceIds,
-        },
-      });
-      return res.status(202).json({ job: { id: job.id, status: job.status }, replay });
-    } catch (error) {
-      return errorResponse(res, error);
-    }
-  },
+  }),
 );
 
 router.get(
   '/admin/lessons/:lessonId/texts/:textId/readiness',
   authenticate,
-  async (req: AuthenticatedRequest, res) => {
+  run(async (req: AuthenticatedRequest, res) => {
     if (!requireAdmin(req, res)) return;
     const context = await loadTextContext(req.params.lessonId, req.params.textId);
     if (!context) return res.status(404).json({ message: 'Text not found' });
@@ -383,48 +346,7 @@ router.get(
       const { readiness } = await inspectReaderDraft(prisma, context.item.id);
       return res.json({ readiness });
     } catch (error) { return errorResponse(res, error); }
-  },
-);
-
-const releaseSchema = z.object({
-  contentRevisionId: z.string().min(1),
-  narrationId: z.string().min(1),
-  alignmentId: z.string().min(1),
-});
-
-router.post(
-  '/admin/lessons/:lessonId/texts/:textId/releases',
-  authenticate,
-  async (req: AuthenticatedRequest, res) => {
-    if (!requireAdmin(req, res)) return;
-    const context = await loadTextContext(req.params.lessonId, req.params.textId);
-    if (!context) return res.status(404).json({ message: 'Text not found' });
-
-    const parsed = releaseSchema.safeParse(req.body);
-    if (!parsed.success) {
-      return res.status(400).json({ message: 'Invalid payload', issues: parsed.error.flatten() });
-    }
-
-    try {
-      const release = await prisma.$transaction(async tx => {
-        const { workspace, readiness, snapshot } = await inspectReaderDraft(tx, context.item.id);
-        if (workspace.currentContentRevisionId !== parsed.data.contentRevisionId ||
-            workspace.currentNarrationId !== parsed.data.narrationId || workspace.currentAlignmentId !== parsed.data.alignmentId) {
-          throw new ReaderReleaseError(409, 'Supplied lineage is not the current draft lineage for this text');
-        }
-        if (!snapshot || !readiness.readyForApproval) throw new ReaderReleaseError(422, 'Text is not ready for approval', { readiness });
-        const id = crypto.randomUUID();
-        const created = await tx.textRelease.create({ data: {
-          id, textId: context.item.id, ...parsed.data, entryIds: readiness.eligibleEntryIds,
-          readinessSnapshot: readiness as any, manifestSnapshot: { ...snapshot, textReleaseId: id } as any,
-          authorId: req.user!.id,
-        } });
-        await tx.textWorkspace.update({ where: { textId: context.item.id }, data: { approvedTextReleaseId: id } });
-        return created;
-      }, { isolationLevel: 'Serializable' });
-      return res.status(201).json({ release });
-    } catch (error) { return errorResponse(res, error); }
-  },
+  }),
 );
 
 export { router as textAuthoringRouter };

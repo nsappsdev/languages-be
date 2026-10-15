@@ -129,7 +129,7 @@ router.get('/learners/:learnerId/progress-summary', authenticate, async (req: Au
     SELECT
       event_stats."lessonId" AS "lessonId",
       lesson."title" AS "lessonTitle",
-      lesson."status"::text AS "lessonStatus",
+      CASE WHEN lesson."currentPublicationId" IS NULL THEN 'DRAFT' ELSE 'PUBLISHED' END AS "lessonStatus",
       event_stats."totalEvents" AS "totalEvents",
       event_stats."itemsStarted" AS "itemsStarted",
       event_stats."itemsCompleted" AS "itemsCompleted",

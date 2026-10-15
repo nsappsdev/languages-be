@@ -2,19 +2,15 @@ import { strict as assert } from 'node:assert';
 import { after, before, describe, it } from 'node:test';
 import { startTestServer, createTestAdminUser, prisma, type TestServer } from './helpers/authoringTestApp';
 import { installFakeElevenLabsFetch } from './helpers/fakeElevenLabsFetch';
-import { runAudioWorkerOnceForTests } from '../../workers/audioWorker';
+import { runGenerateNarrationJob } from '../../lib/textAudioPipeline';
 
-describe('text authoring API (generate -> align -> select -> translate -> extract -> readiness -> release)', () => {
+describe('text authoring API (generate -> align -> select -> translate -> publish)', () => {
   let server: TestServer;
   let token: string;
   let restoreFetch: () => void;
 
   before(async () => {
-    // A previous test run against this same disposable DB may have left
-    // never-drained QUEUED jobs behind (e.g. the intentionally-unprocessed
-    // conflict-check job below); clear those so FIFO claiming in this run is
-    // deterministic. Only ever removes rows still in the QUEUED state.
-    await prisma.audioJob.deleteMany({ where: { status: 'QUEUED' } });
+
     server = await startTestServer();
     const admin = await createTestAdminUser();
     token = admin.token;
@@ -32,7 +28,10 @@ describe('text authoring API (generate -> align -> select -> translate -> extrac
       if (job && job.status !== 'QUEUED' && job.status !== 'RUNNING') {
         return job;
       }
-      await runAudioWorkerOnceForTests();
+      if (job?.status === 'QUEUED') {
+        const claimed = await prisma.audioJob.update({ where: { id: job.id }, data: { status: 'RUNNING' } });
+        await runGenerateNarrationJob(prisma, claimed);
+      }
     }
     throw new Error(`Job ${jobId} did not settle after draining the queue`);
   }
@@ -51,7 +50,7 @@ describe('text authoring API (generate -> align -> select -> translate -> extrac
       method: 'POST',
       body: JSON.stringify({
         title,
-        items: [{ text, audioUrl: '', order: 0, segments: [{ text, startMs: 0, endMs: 1000 }] }],
+        items: [{ text }],
       }),
     });
     assert.equal(created.status, 201);
@@ -73,14 +72,14 @@ describe('text authoring API (generate -> align -> select -> translate -> extrac
       method: 'POST',
       body: JSON.stringify({ text: 'The cat sat on the mat with the cat.', sourceLanguage: 'en' }),
     });
-    assert.equal(revisionOne.status, 201);
+    assert.equal(revisionOne.status, 200);
     const revisionIdOne = revisionOne.body.revision.id;
 
     const revisionTwo = await api(`/api/admin/lessons/${textTwo.lessonId}/texts/${textTwo.textId}/content-revisions`, {
       method: 'POST',
       body: JSON.stringify({ text: 'The cat ran away.', sourceLanguage: 'en' }),
     });
-    assert.equal(revisionTwo.status, 201);
+    assert.equal(revisionTwo.status, 200);
     const revisionIdTwo = revisionTwo.body.revision.id;
 
     // Saving byte-identical text again is a no-op (200, not a new revision).
@@ -116,8 +115,7 @@ describe('text authoring API (generate -> align -> select -> translate -> extrac
     });
     assert.equal(jobTwo.status, 202);
 
-    // Drive the in-process worker synchronously (no real timers/network),
-    // draining until each specific job settles regardless of claim order.
+    // Execute the requested job with the synthetic provider, without external calls.
     await drainJob(jobOne.body.job.id);
     await drainJob(jobTwo.body.job.id);
 
@@ -153,7 +151,7 @@ describe('text authoring API (generate -> align -> select -> translate -> extrac
     assert.equal(readinessBefore.body.readiness.selectedCount, 1);
     assert.equal(readinessBefore.body.readiness.selectedMissingTranslationCount, 1);
     assert.equal(readinessBefore.body.readiness.selectedMissingClipCount, 1);
-    assert.equal(readinessBefore.body.readiness.readyForApproval, false);
+    assert.equal(readinessBefore.body.readiness.readyForPublication, false);
 
     // --- Contextual translation for text one's entry ---
     const translated = await api(`/api/admin/lessons/${textOne.lessonId}/texts/${textOne.textId}/vocabulary/${entryId}`, {
@@ -162,20 +160,13 @@ describe('text authoring API (generate -> align -> select -> translate -> extrac
     });
     assert.equal(translated.status, 200);
 
-    // --- Extract the clip for the selected occurrence ---
-    const clipJob = await api(`/api/admin/lessons/${textOne.lessonId}/texts/${textOne.textId}/clip-jobs`, {
-      method: 'POST',
-      headers: { 'Idempotency-Key': 'clip-1' },
-      body: JSON.stringify({ narrationId: narrationIdOne, alignmentId: alignmentIdOne, occurrenceIds: [catOccurrences[0].id] }),
-    });
-    assert.equal(clipJob.status, 202);
-    await drainJob(clipJob.body.job.id);
-    const clipJobStatus = await api(`/api/admin/audio-jobs/${clipJob.body.job.id}`);
-    assert.equal(clipJobStatus.body.job.status, 'SUCCEEDED');
+    // Single publish extracts missing clips without a second provider request.
+    const published = await api(`/api/admin/lessons/${textOne.lessonId}/publish`, { method: 'POST', body: '{}' });
+    assert.equal(published.status, 201);
 
     // --- Readiness now passes for the one selected+translated+clipped entry ---
     const readinessAfter = await api(`/api/admin/lessons/${textOne.lessonId}/texts/${textOne.textId}/readiness`);
-    assert.equal(readinessAfter.body.readiness.readyForApproval, true);
+    assert.equal(readinessAfter.body.readiness.readyForPublication, true);
     assert.deepEqual(readinessAfter.body.readiness.eligibleEntryIds, [entryId]);
 
     // --- The clip asset streams back real bytes, matching persisted length, with Range support ---
@@ -187,13 +178,6 @@ describe('text authoring API (generate -> align -> select -> translate -> extrac
     assert.equal(assetRes.status, 206);
     const rangeBytes = Buffer.from(await assetRes.arrayBuffer());
     assert.equal(rangeBytes.length, 4);
-
-    // --- Approve the text release ---
-    const release = await api(`/api/admin/lessons/${textOne.lessonId}/texts/${textOne.textId}/releases`, {
-      method: 'POST',
-      body: JSON.stringify({ contentRevisionId: revisionIdOne, narrationId: narrationIdOne, alignmentId: alignmentIdOne }),
-    });
-    assert.equal(release.status, 201);
 
     // --- Cross-text isolation: text two never sees text one's entry/translation ---
     const workspaceTwoAfterGen = await api(`/api/admin/lessons/${textTwo.lessonId}/texts/${textTwo.textId}`);
@@ -208,11 +192,11 @@ describe('text authoring API (generate -> align -> select -> translate -> extrac
     const entryCountForTextTwo = await prisma.textVocabularyEntry.count({ where: { textId: textTwo.textId } });
     assert.equal(entryCountForTextTwo, 0);
 
-    // --- Legacy learner-facing lesson reads are untouched by any of this ---
+    // The admin reads the authoritative revision and derived publication status.
     const legacyLessonOne = await api(`/api/lessons/${textOne.lessonId}`);
     assert.equal(legacyLessonOne.status, 200);
     assert.equal(legacyLessonOne.body.lesson.items[0].text, 'The cat sat on the mat with the cat.');
-    assert.ok(Array.isArray(legacyLessonOne.body.lesson.vocabulary));
+    assert.equal(legacyLessonOne.body.lesson.currentPublicationId, published.body.publicationId);
   });
 
   it('rejects an idempotency key reused with a different payload as a conflict', async () => {
@@ -236,9 +220,10 @@ describe('text authoring API (generate -> align -> select -> translate -> extrac
       body: JSON.stringify({ contentRevisionId: rev.body.revision.id, voiceProfileId: 'a-different-voice' }),
     });
     assert.equal(conflicting.status, 409);
+    await drainJob(first.body.job.id);
   });
 
-  it('refuses to release before readiness (selected entry missing translation/clip)', async () => {
+  it('refuses to publish when a selected entry is missing its Armenian translation', async () => {
     const { lessonId, textId } = await createLessonWithOneItem('Incomplete Lesson', 'Simple test sentence.');
     const rev = await api(`/api/admin/lessons/${lessonId}/texts/${textId}/content-revisions`, {
       method: 'POST',
@@ -262,12 +247,12 @@ describe('text authoring API (generate -> align -> select -> translate -> extrac
       body: JSON.stringify({ alignmentId, changes: [{ occurrenceId: first.id, selected: true }] }),
     });
 
-    const release = await api(`/api/admin/lessons/${lessonId}/texts/${textId}/releases`, {
+    const release = await api(`/api/admin/lessons/${lessonId}/publish`, {
       method: 'POST',
-      body: JSON.stringify({ contentRevisionId: rev.body.revision.id, narrationId, alignmentId }),
+      body: '{}',
     });
     assert.equal(release.status, 422);
-    assert.equal(release.body.readiness.readyForApproval, false);
+    assert.equal(release.body.texts[0].readiness.readyForPublication, false);
     assert.ok(job.body.job.id);
   });
 });

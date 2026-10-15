@@ -15,21 +15,21 @@ function entry(overrides: Partial<ReadinessEntryInput> = {}): ReadinessEntryInpu
 describe('computeTextReadiness', () => {
   it('is not ready when narration is missing, regardless of entries', () => {
     const result = computeTextReadiness({ narrationStatus: 'MISSING', alignmentStatus: 'MISSING', entries: [] });
-    assert.equal(result.readyForApproval, false);
+    assert.equal(result.readyForPublication, false);
     assert.ok(result.reasonCodes.includes('NARRATION_MISSING'));
   });
 
   it('is not ready when alignment needs review', () => {
     const result = computeTextReadiness({ narrationStatus: 'READY', alignmentStatus: 'NEEDS_REVIEW', entries: [] });
-    assert.equal(result.readyForApproval, false);
+    assert.equal(result.readyForPublication, false);
     assert.ok(result.reasonCodes.includes('ALIGNMENT_NEEDS_REVIEW'));
   });
 
   it('allows zero selections as a valid ready state ("no learning words selected")', () => {
     const result = computeTextReadiness({ narrationStatus: 'READY', alignmentStatus: 'OK', entries: [] });
-    assert.equal(result.readyForApproval, true);
+    assert.equal(result.readyForPublication, true);
     assert.equal(result.selectedCount, 0);
-    assert.ok(result.reasonCodes.includes('NO_WORDS_SELECTED'));
+    assert.equal(result.canPublish, true);
   });
 
   it('unselected entries never block readiness even if missing translation/clip', () => {
@@ -38,7 +38,7 @@ describe('computeTextReadiness', () => {
       alignmentStatus: 'OK',
       entries: [entry({ id: 'a', selected: false, hasNonBlankTranslation: false, hasCurrentClip: false })],
     });
-    assert.equal(result.readyForApproval, true);
+    assert.equal(result.readyForPublication, true);
     assert.equal(result.selectedCount, 0);
   });
 
@@ -57,7 +57,7 @@ describe('computeTextReadiness', () => {
     assert.equal(result.selectedMissingTranslationCount, 1);
     assert.equal(result.selectedMissingClipCount, 1);
     assert.deepEqual(result.eligibleEntryIds, ['complete']);
-    assert.equal(result.readyForApproval, false);
+    assert.equal(result.readyForPublication, false);
   });
 
   it('is ready when every selected entry has both translation and a current clip', () => {
@@ -66,7 +66,7 @@ describe('computeTextReadiness', () => {
       alignmentStatus: 'OK',
       entries: [entry({ id: 'a' }), entry({ id: 'b' })],
     });
-    assert.equal(result.readyForApproval, true);
+    assert.equal(result.readyForPublication, true);
     assert.deepEqual(result.eligibleEntryIds.sort(), ['a', 'b']);
   });
 });
