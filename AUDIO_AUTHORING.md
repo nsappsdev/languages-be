@@ -246,3 +246,26 @@ The obsolete OpenAI translation endpoint was part of the removed legacy vocabula
 `POST /admin/lessons/:lessonId/texts/:textId/vocabulary/import` accepts `{ alignmentId, expectedDraftVersion, entries: [{ occurrenceId, endOccurrenceId?, translation }] }`. The occurrences response now includes `draftVersion` for the preview's concurrency check and each entry's `endOccurrenceId`. Import accepts 1–500 entries with nonblank Armenian translations, takes the lesson lock, validates the entire batch, then saves all selections and `hy` translations in one transaction. Stale previews return 409; invalid ranges return 422; overlapping ranges return 409. Other languages are preserved for unchanged ranges. Auth, text ownership, archival, and current narration/alignment checks apply exactly as in manual authoring.
 
 Publication joins the existing first/last word cut boundaries into one phrase clip, checks the exact bytes and bounds, and snapshots a single reader occurrence spanning the phrase. Covered interior words are omitted only from that new reader snapshot, preventing duplicate rendering or separate repetitions. The schema-version-2 shape, occurrence anchor identity, reading settings, and private-audio contracts remain unchanged. No estimated timestamps or additional provider calls are introduced.
+
+## Shared vocabulary library (2026-10-17)
+
+Migration `20261017140000_shared_vocabulary_library` adds an index over saved published clips. `VocabularyTerm` groups exact normalized spelling plus source language. `VocabularyMeaning` groups a term's normalized Armenian translation (not an inferred dictionary sense). `VocabularyRecording` references the existing immutable `AudioAsset` and narration, without copying bytes. `VocabularyUsage` records a release, occurrence, source lesson, and sentence. `VocabularyPreference` explicitly selects a recording for one meaning and voice, with the modifying admin and timestamp.
+
+Publish indexes every released text, including the unchanged-publication path, in the same transaction. Repeated publication/backfill creates no duplicate usages, clips, or jobs. Translation edits retain historical meaning/usage records and reuse the same audio asset. Library references restrict deletion of the source assets and releases; archival remains supported. Do not delete audio files referenced by the library during storage cleanup.
+
+Admin endpoints (authenticated admin only):
+
+- `GET /api/admin/vocabulary?q=...&page=1`: search spelling or Armenian translation, 25 entries per page, including recording counts.
+- `GET /api/admin/vocabulary/:termId`: meanings, recordings, availability, preferred choices, source sentences, and current/earlier lesson usages.
+- `PUT /api/admin/vocabulary/meanings/:meaningId/preference`: `{ voiceId, recordingId: string | null, expectedRecordingId: string | null }`. Null clears the preference. Different meaning/voice or unavailable assets return 422. A concurrent preference change returns 409 rather than overwriting another admin's choice.
+
+`GET /learner/words` substitutes a valid preferred clip only for matching indexed meaning and voice; otherwise it returns the original contextual clip. Existing mobile vocabulary playback consumes this unchanged response shape. Lesson manifests, repetitions within lessons, translations, and learner state identities are unchanged. The private audio endpoint permits a preferred asset only through an accessible publication containing the corresponding meaning/voice. Guessing another library asset ID does not grant access. Unpublishing the consuming lesson revokes its access as before. An explicitly shared preferred recording can still be used through another published lesson after its source lesson is withdrawn; it is now a retained library asset. Clearing a preference restores contextual audio on the next vocabulary refresh.
+
+Existing publications can be indexed after migrating and building:
+
+```sh
+npm run vocabulary:backfill
+npm run vocabulary:backfill -- --apply
+```
+
+The first command is a read-only inventory. The second applies idempotent indexing in batches, with one transaction per release. Run against the intended database and its existing `AUDIO_AUTHORING_STORAGE_ROOT`. It reads immutable release snapshots, verifies referenced clip bytes, skips legacy releases without snapshots, and stops on an invalid asset. It creates no files, audio jobs, provider requests, or new publications. After an interruption, correct the reported issue and rerun; completed releases are safe to revisit.

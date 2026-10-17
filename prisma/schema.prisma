@@ -51,6 +51,7 @@ model Lesson {
   vocabularyReviewDecisions      LearnerVocabularyReviewDecision[]
   currentPublicationId           String?
   readerPublications             LessonPublication[]
+  sharedVocabularyUsages         VocabularyUsage[]
 }
 
 model LessonItem {
@@ -297,6 +298,7 @@ model AudioAsset {
 
   narrations  TextNarration[]
   wordClips   WordClip[]
+  libraryRecordings VocabularyRecording[]
 
   @@index([textId, kind])
 }
@@ -320,6 +322,7 @@ model TextNarration {
 
   alignments TextAlignment[]
   wordClips  WordClip[]
+  libraryRecordings VocabularyRecording[]
 
   @@index([textId, createdAt])
 }
@@ -443,8 +446,81 @@ model TextRelease {
   manifestSnapshot  Json?
   authorId          String
   createdAt         DateTime @default(now())
+  vocabularyUsages VocabularyUsage[]
 
   @@index([textId, createdAt])
+}
+
+// Shared vocabulary indexes immutable published clips; it never copies audio
+// or changes a lesson's contextual translation, alignment, or recording.
+model VocabularyTerm {
+  id             String @id @default(cuid())
+  language       String
+  normalizedText String
+  displayText    String
+  createdAt      DateTime @default(now())
+  meanings       VocabularyMeaning[]
+
+  @@unique([language, normalizedText])
+}
+
+model VocabularyMeaning {
+  id                    String @id @default(cuid())
+  termId                String
+  term                  VocabularyTerm @relation(fields: [termId], references: [id], onDelete: Restrict)
+  translation           String
+  normalizedTranslation String
+  recordings            VocabularyRecording[]
+  preferences           VocabularyPreference[]
+
+  @@unique([termId, normalizedTranslation])
+}
+
+model VocabularyRecording {
+  id          String @id @default(cuid())
+  meaningId   String
+  meaning     VocabularyMeaning @relation(fields: [meaningId], references: [id], onDelete: Restrict)
+  assetId     String
+  asset       AudioAsset @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  narrationId String
+  narration   TextNarration @relation(fields: [narrationId], references: [id], onDelete: Restrict)
+  voiceId     String
+  model       String
+  createdAt   DateTime @default(now())
+  usages      VocabularyUsage[]
+  preferredBy VocabularyPreference[]
+
+  @@unique([meaningId, assetId])
+}
+
+model VocabularyUsage {
+  id            String @id @default(cuid())
+  recordingId   String
+  recording     VocabularyRecording @relation(fields: [recordingId], references: [id], onDelete: Restrict)
+  lessonId      String
+  lesson        Lesson @relation(fields: [lessonId], references: [id], onDelete: Restrict)
+  textReleaseId String
+  textRelease   TextRelease @relation(fields: [textReleaseId], references: [id], onDelete: Restrict)
+  occurrenceId  String
+  sentence      String
+
+  @@unique([textReleaseId, occurrenceId])
+  @@index([lessonId])
+  @@index([recordingId])
+}
+
+// A preference is explicit and scoped to both meaning and voice. Spelling
+// alone must never replace a contextual pronunciation with a different one.
+model VocabularyPreference {
+  meaningId   String
+  meaning     VocabularyMeaning @relation(fields: [meaningId], references: [id], onDelete: Restrict)
+  voiceId     String
+  recordingId String
+  recording   VocabularyRecording @relation(fields: [recordingId], references: [id], onDelete: Restrict)
+  updatedBy   String
+  updatedAt   DateTime @updatedAt
+
+  @@id([meaningId, voiceId])
 }
 
 // Immutable learner delivery. Draft edits never mutate a published manifest.
