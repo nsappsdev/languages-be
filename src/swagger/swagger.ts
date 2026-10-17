@@ -580,6 +580,30 @@ const definition = {
         }
       }
     },
+    '/admin/vocabulary': {
+      get: {
+        tags: ['Vocabulary library'], summary: 'Search saved words, phrases and Armenian meanings', security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'q', in: 'query', schema: { type: 'string', maxLength: 200 } }, { name: 'page', in: 'query', schema: { type: 'integer', minimum: 1, default: 1 } }],
+        responses: { '200': { description: 'Paginated terms with translations and saved recording counts' }, '401': { description: 'Authentication required' }, '403': { description: 'Admin access required' } },
+      },
+    },
+    '/admin/vocabulary/{termId}': {
+      get: {
+        tags: ['Vocabulary library'], summary: 'Saved recordings, preferred choices and source lessons', security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'termId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Term, meanings, recordings, availability and current/historical usages' }, '403': { description: 'Admin access required' }, '404': { description: 'Vocabulary entry not found' } },
+      },
+    },
+    '/admin/vocabulary/meanings/{meaningId}/preference': {
+      put: {
+        tags: ['Vocabulary library'], summary: 'Choose or clear a saved recording for standalone vocabulary practice', security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'meaningId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: false,
+          required: ['voiceId', 'recordingId', 'expectedRecordingId'], properties: { voiceId: { type: 'string' }, recordingId: { type: 'string', nullable: true }, expectedRecordingId: { type: 'string', nullable: true } },
+        } } } },
+        responses: { '200': { description: 'Preference saved; existing file reused without changing lesson manifests' }, '403': { description: 'Admin access required' }, '409': { description: 'Concurrent preference change; reload before retrying' }, '422': { description: 'Unavailable recording or mismatched meaning/voice' } },
+      },
+    },
     '/admin/lessons/{lessonId}/publish': {
       post: {
         tags: [ 'Text authoring' ],

@@ -10,7 +10,8 @@
     "test": "npm run build && node --test dist/lib/__tests__/*.test.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "seed": "npm run build && node dist/scripts/seedAdmin.js"
+    "seed": "npm run build && node dist/scripts/seedAdmin.js",
+    "vocabulary:backfill": "node dist/scripts/backfillVocabularyLibrary.js"
   },
   "dependencies": {
     "@prisma/client": "^6.19.2",

@@ -8,6 +8,7 @@ import { servePrivateAudio } from '../lib/servePrivateAudio';
 import { ReaderManifest } from '../types/reader';
 import { publishLesson } from '../lib/lessonPublication';
 import { lockLesson } from '../lib/authoringTransaction';
+import { preferredVocabularyClips, vocabularyUsageKey } from '../lib/vocabularyLibrary';
 
 const router = Router();
 const run = (handler: (req: AuthenticatedRequest, res: Response) => Promise<unknown>) =>
@@ -86,8 +87,13 @@ router.get('/learner/lessons/:lessonId/manifest', authenticate, run(async (req, 
 router.get('/learner/publications/:publicationId', authenticate, run((req, res) => manifestResponse(req, res, req.params.publicationId)));
 
 router.get('/learner/audio-assets/:assetId/content', authenticate, run(async (req, res) => {
-  const { publication } = await getPublication(String(req.query.publicationId ?? ''));
-  if (!publication.assetIds.includes(req.params.assetId)) throw new ReaderReleaseError(404, 'Audio unavailable in this publication');
+  const { publication, manifest } = await getPublication(String(req.query.publicationId ?? ''));
+  if (!publication.assetIds.includes(req.params.assetId)) {
+    // An admin-approved library clip is authorized only through a matching
+    // meaning/voice occurrence in this accessible publication, never by ID alone.
+    const preferred = await preferredVocabularyClips(prisma, manifest.texts);
+    if (![...preferred.values()].some(asset => asset.id === req.params.assetId)) throw new ReaderReleaseError(404, 'Audio unavailable in this publication');
+  }
   const asset = await prisma.audioAsset.findUnique({ where: { id: req.params.assetId } });
   return servePrivateAudio(req, res, asset);
 }));
@@ -132,10 +138,14 @@ router.put('/learner/reader-progress', authenticate, run(async (req, res) => {
 
 router.get('/learner/words', authenticate, run(async (req, res) => {
   const [publications, states] = await Promise.all([currentPublications(), prisma.readerWordState.findMany({ where: { userId: req.user!.id } })]);
+  const preferred = await preferredVocabularyClips(prisma, publications.flatMap(p => p.manifest.texts));
+  res.setHeader('Cache-Control', 'private, no-store');
   return res.json({ words: publications.flatMap(({ publication, manifest }) => manifest.texts.flatMap(text =>
     text.occurrences.flatMap(occurrence => occurrence.learning ? [{
       publicationId: publication.id, lessonId: manifest.lessonId, lessonTitle: manifest.title, textReleaseId: text.textReleaseId,
-      occurrence, sentence: text.sentences.find(s => s.id === occurrence.sentenceId)?.text ?? '',
+      occurrence: { ...occurrence, learning: { ...occurrence.learning,
+        clip: preferred.get(vocabularyUsageKey(text.textReleaseId, occurrence.id)) ?? occurrence.learning.clip } },
+      sentence: text.sentences.find(s => s.id === occurrence.sentenceId)?.text ?? '',
       status: states.find(s => s.textReleaseId === text.textReleaseId && s.occurrenceId === occurrence.id)?.status ?? 'NEW',
     }] : []))) });
 }));

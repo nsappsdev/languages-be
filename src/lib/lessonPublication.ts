@@ -7,6 +7,7 @@ import { decodeWav, encodeWav } from './pcmWav';
 import { extractWordClip } from './wordClipExtraction';
 import { readAudioAssetRange, writeAudioAsset } from './audioAssetStorage';
 import { ReaderManifest, ReaderText } from '../types/reader';
+import { indexPublishedVocabulary } from './vocabularyLibrary';
 
 type Draft = Awaited<ReturnType<typeof inspectReaderDraft>>;
 
@@ -22,8 +23,7 @@ export async function extractMissingClips(tx: Prisma.TransactionClient, draft: D
   if (decoded.frameCount !== narration.asset.frameCount || decoded.sampleRate !== narration.asset.sampleRate)
     throw new ReaderReleaseError(422, 'Narration audio metadata is inconsistent');
   for (const occurrenceId of draft.missingClipOccurrenceIds) {
-    const occurrence = draft.alignment.occurrences.find(o => o.id === occurrenceId)!;
-    const cut = draft.cuts.get(occurrence.ordinal)!;
+    const cut = draft.vocabularyCuts.get(occurrenceId)!;
     const entry = await tx.textVocabularyEntry.findUniqueOrThrow({ where: { alignmentId_occurrenceId: { alignmentId: draft.alignment.id, occurrenceId } } });
     const clip = extractWordClip(decoded, cut.startSample, cut.endSample);
     const written = await writeAudioAsset({ textId: narration.textId, kind: 'WORD_CLIP', bytes: encodeWav(clip) });
@@ -70,6 +70,9 @@ export async function publishLesson(prisma: PrismaClient, lessonId: string, acto
       texts.push(snapshot);
     }
     const manifest: ReaderManifest = { schemaVersion: 2, lessonId, title: lesson.title, description: lesson.description, texts };
+    // Include the reuse path so existing publications can be indexed without
+    // creating new releases or audio files.
+    await indexPublishedVocabulary(tx, lessonId, texts);
     if (previous && !previous.revokedAt && computeRequestHash(previous.manifest) === computeRequestHash(manifest))
       return { publicationId: previous.id, replay: true };
     const created = await tx.lessonPublication.create({ data: { lessonId, authorId: actorId,
