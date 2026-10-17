@@ -382,6 +382,8 @@ model TextVocabularyEntry {
   alignmentId  String
   alignment    TextAlignment @relation(fields: [alignmentId], references: [id], onDelete: Cascade)
   occurrenceId String
+  // Null is a single word; a phrase includes every word through this occurrence.
+  endOccurrenceId String?
   selected     Boolean       @default(true)
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt

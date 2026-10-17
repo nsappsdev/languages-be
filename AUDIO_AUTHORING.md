@@ -236,3 +236,13 @@ TIMING_TRANSCRIPTION_PROVIDER
 ```
 
 The obsolete OpenAI translation endpoint was part of the removed legacy vocabulary workflow; there are no remaining unrelated OpenAI callers. Obsolete entries were removed from the local backend environment, examples, compose configuration, and workflow forwarding without printing secret values. Remote secret stores were not modified. Retain `APP_BASE_URL`, all ElevenLabs and private-audio configuration, and unrelated authentication/email/database credentials.
+
+## Bulk vocabulary and phrases (2026-10-17)
+
+`TextVocabularyEntry.endOccurrenceId` is nullable: null retains the existing single-word behavior; a non-null value includes every aligned occurrence from `occurrenceId` through that endpoint. Both endpoints must belong to the current alignment and the same sentence, in forward order. Selected ranges cannot overlap. Source alignment words and prior published manifests remain intact. The additive migration is `20261017090000_vocabulary_phrase_ranges`.
+
+`PATCH .../selection` accepts an optional `endOccurrenceId` on each selection change. Deselecting preserves the stored range and translation. Selecting a different range clears its previous translations so the meaning of one word is never silently assigned to a different phrase.
+
+`POST /admin/lessons/:lessonId/texts/:textId/vocabulary/import` accepts `{ alignmentId, expectedDraftVersion, entries: [{ occurrenceId, endOccurrenceId?, translation }] }`. The occurrences response now includes `draftVersion` for the preview's concurrency check and each entry's `endOccurrenceId`. Import accepts 1–500 entries with nonblank Armenian translations, takes the lesson lock, validates the entire batch, then saves all selections and `hy` translations in one transaction. Stale previews return 409; invalid ranges return 422; overlapping ranges return 409. Other languages are preserved for unchanged ranges. Auth, text ownership, archival, and current narration/alignment checks apply exactly as in manual authoring.
+
+Publication joins the existing first/last word cut boundaries into one phrase clip, checks the exact bytes and bounds, and snapshots a single reader occurrence spanning the phrase. Covered interior words are omitted only from that new reader snapshot, preventing duplicate rendering or separate repetitions. The schema-version-2 shape, occurrence anchor identity, reading settings, and private-audio contracts remain unchanged. No estimated timestamps or additional provider calls are introduced.

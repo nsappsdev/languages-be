@@ -4,6 +4,7 @@ import { readAudioAssetRange } from './audioAssetStorage';
 import { computeTextReadiness } from './textReadiness';
 import { computeContiguousCutBoundaries } from './wordClipExtraction';
 import { ReaderAsset, ReaderText } from '../types/reader';
+import { assertNonOverlappingRanges, resolveVocabularyRange } from './vocabularyRanges';
 
 type Db = Prisma.TransactionClient;
 
@@ -49,12 +50,23 @@ export async function inspectReaderDraft(db: Db, textId: string) {
   const boundaries = lineageValid ? computeContiguousCutBoundaries(alignment!.occurrences.map(o => ({
     ordinal: o.ordinal, speechStartSample: o.speechStartSample!, speechEndSample: o.speechEndSample!,
   })), narration!.asset.frameCount!) : null;
-  const alignmentValid = lineageValid && boundaries?.status === 'OK';
+  let alignmentValid = lineageValid && boundaries?.status === 'OK';
+  try { assertNonOverlappingRanges(alignment?.occurrences ?? [], entries.filter(entry => entry.selected)); }
+  catch { alignmentValid = false; }
   const cuts = new Map(boundaries?.cuts.map(c => [c.ordinal, c]) ?? []);
+  const vocabularyCuts = new Map<string, { startSample: number; endSample: number }>();
+  const ranges = new Map<string, ReturnType<typeof resolveVocabularyRange>>();
+  if (alignmentValid && alignment) for (const entry of entries) {
+    try {
+      const range = resolveVocabularyRange(alignment.occurrences, entry);
+      ranges.set(entry.occurrenceId, range);
+      vocabularyCuts.set(entry.occurrenceId, { startSample: cuts.get(range.first.ordinal)!.startSample, endSample: cuts.get(range.last.ordinal)!.endSample });
+    } catch { /* Invalid inactive historical entries do not participate in publication. */ }
+  }
   const clips = new Map(entries.map(entry => [entry.id, entry.wordClips.find(clip =>
     alignmentValid && clip.textId === textId && clip.narrationId === narration!.id && clip.alignmentId === alignment!.id &&
     clip.occurrenceId === entry.occurrenceId && clip.entryId === entry.id && clip.asset.textId === textId && clip.asset.kind === 'WORD_CLIP' &&
-    alignment!.occurrences.some(o => o.id === clip.occurrenceId && cuts.get(o.ordinal)?.startSample === clip.startSample && cuts.get(o.ordinal)?.endSample === clip.endSample) &&
+    vocabularyCuts.get(entry.occurrenceId)?.startSample === clip.startSample && vocabularyCuts.get(entry.occurrenceId)?.endSample === clip.endSample &&
     clip.startSample >= 0 && clip.endSample > clip.startSample && clip.endSample <= narration!.asset.frameCount! &&
     clip.asset.frameCount === clip.endSample - clip.startSample && clip.asset.sampleRate === narration!.asset.sampleRate &&
     validReaderAsset(clip.asset))]));
@@ -67,6 +79,7 @@ export async function inspectReaderDraft(db: Db, textId: string) {
   let snapshot: ReaderText | null = null;
   if (readiness.readyForPublication && revision && narration && alignment) {
     const selected = new Map(entries.filter(e => e.selected).map(e => [e.occurrenceId, e]));
+    const phraseMembers = new Set(entries.filter(entry => entry.selected).flatMap(entry => ranges.get(entry.occurrenceId)?.members.slice(1).map(word => word.id) ?? []));
     const sentences = alignment.sentences as unknown as { id: string; text: string; charStart: number; charEnd: number }[];
     snapshot = {
       textId, textReleaseId: '', contentRevisionId: revision.id, narrationId: narration.id, alignmentId: alignment.id,
@@ -76,11 +89,12 @@ export async function inspectReaderDraft(db: Db, textId: string) {
         return { ...sentence, startSample: words[0]?.speechStartSample ?? 0,
           endSample: words[words.length - 1]?.speechEndSample ?? 0 };
       }),
-      occurrences: alignment.occurrences.map(o => {
+      occurrences: alignment.occurrences.filter(o => !phraseMembers.has(o.id)).map(o => {
         const entry = selected.get(o.id);
         const clip = entry ? clips.get(entry.id) : undefined;
-        return { id: o.id, ordinal: o.ordinal, text: o.surfaceText, charStart: o.charStart, charEnd: o.charEnd,
-          sentenceId: o.sentenceId, startSample: o.speechStartSample!, endSample: o.speechEndSample!,
+        const last = entry ? ranges.get(o.id)!.last : o;
+        return { id: o.id, ordinal: o.ordinal, text: revision.text.slice(o.charStart, last.charEnd), charStart: o.charStart, charEnd: last.charEnd,
+          sentenceId: o.sentenceId, startSample: o.speechStartSample!, endSample: last.speechEndSample!,
           learning: entry && clip ? { entryId: entry.id,
             translations: entry.translations.filter(t => t.translation.trim()).map(t => ({
               languageCode: t.languageCode === 'am' ? 'hy' : t.languageCode, translation: t.translation.trim() })),
@@ -89,7 +103,7 @@ export async function inspectReaderDraft(db: Db, textId: string) {
     };
   }
   if (activeNarration) readiness.reasonCodes.push('NARRATION_IN_PROGRESS');
-  return { workspace, readiness, snapshot, revision, narration, alignment, clips, cuts,
+  return { workspace, readiness, snapshot, revision, narration, alignment, clips, cuts, vocabularyCuts,
     missingClipOccurrenceIds: entries.filter(e => e.selected && !clips.get(e.id)).map(e => e.occurrenceId) };
 }
 

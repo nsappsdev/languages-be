@@ -4,7 +4,7 @@ import { authenticate, AuthenticatedRequest } from '../middleware/authenticate';
 import { prisma } from '../lib/prisma';
 import { config } from '../config';
 import { ensureWorkspace, saveContentRevision } from '../lib/textWorkspaces';
-import { setSelection, setTranslations } from '../lib/textVocabulary';
+import { importVocabulary, setSelection, setTranslations } from '../lib/textVocabulary';
 import { Prisma } from '@prisma/client';
 import { inspectReaderDraft, ReaderReleaseError } from '../lib/readerRelease';
 import { createOrReplayJob, requeueJob, JobConflictError } from '../lib/audioJobs';
@@ -236,6 +236,7 @@ router.get(
 
     return res.json({
       alignmentId,
+      draftVersion: draft.workspace.draftVersion,
       status: alignment.status,
       sentences: alignment.sentences,
       occurrences: occurrences.map((occurrence) => {
@@ -253,6 +254,7 @@ router.get(
           cutEndSample: occurrence.cutEndSample,
           mappingStatus: occurrence.mappingStatus,
           entryId: entry?.id ?? null,
+          endOccurrenceId: entry?.endOccurrenceId ?? null,
           selected: entry?.selected ?? false,
           translations: entry?.translations ?? [],
           clipAssetId: entry ? draft.clips.get(entry.id)?.assetId ?? null : null,
@@ -265,7 +267,7 @@ router.get(
 const selectionSchema = z.object({
   alignmentId: z.string().min(1),
   changes: z
-    .array(z.object({ occurrenceId: z.string().min(1), selected: z.boolean() }))
+    .array(z.object({ occurrenceId: z.string().min(1), endOccurrenceId: z.string().min(1).nullable().optional(), selected: z.boolean() }))
     .min(1)
     .max(100),
 });
@@ -295,6 +297,26 @@ router.patch(
     }
   }),
 );
+
+const importSchema = z.object({
+  alignmentId: z.string().min(1),
+  expectedDraftVersion: z.number().int().positive(),
+  entries: z.array(z.object({
+    occurrenceId: z.string().min(1),
+    endOccurrenceId: z.string().min(1).nullable().optional(),
+    translation: z.string().trim().min(1).max(2000),
+  }).strict()).min(1).max(500),
+}).strict();
+
+router.post('/admin/lessons/:lessonId/texts/:textId/vocabulary/import', authenticate, run(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const context = await loadTextContext(req.params.lessonId, req.params.textId);
+  if (!context) return res.status(404).json({ message: 'Text not found' });
+  const parsed = importSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ message: 'Invalid import. Supply up to 500 words or phrases with Armenian translations.', issues: parsed.error.flatten() });
+  const entries = await importVocabulary(prisma, { textId: context.item.id, ...parsed.data });
+  return res.json({ entries, importedCount: entries.length });
+}));
 
 const translationsSchema = z.object({
   translations: z

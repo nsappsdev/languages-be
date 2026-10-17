@@ -22,8 +22,7 @@ export async function extractMissingClips(tx: Prisma.TransactionClient, draft: D
   if (decoded.frameCount !== narration.asset.frameCount || decoded.sampleRate !== narration.asset.sampleRate)
     throw new ReaderReleaseError(422, 'Narration audio metadata is inconsistent');
   for (const occurrenceId of draft.missingClipOccurrenceIds) {
-    const occurrence = draft.alignment.occurrences.find(o => o.id === occurrenceId)!;
-    const cut = draft.cuts.get(occurrence.ordinal)!;
+    const cut = draft.vocabularyCuts.get(occurrenceId)!;
     const entry = await tx.textVocabularyEntry.findUniqueOrThrow({ where: { alignmentId_occurrenceId: { alignmentId: draft.alignment.id, occurrenceId } } });
     const clip = extractWordClip(decoded, cut.startSample, cut.endSample);
     const written = await writeAudioAsset({ textId: narration.textId, kind: 'WORD_CLIP', bytes: encodeWav(clip) });
