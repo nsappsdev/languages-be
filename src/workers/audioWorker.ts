@@ -2,6 +2,7 @@ import { prisma } from '../lib/prisma';
 import { config } from '../config';
 import { claimNextQueuedJob, failJob } from '../lib/audioJobs';
 import { runGenerateNarrationJob, runExtractClipsJob } from '../lib/textAudioPipeline';
+import { runGenerateVocabularyJob } from '../lib/standaloneVocabulary';
 
 let timer: ReturnType<typeof setTimeout> | null = null;
 let running = false;
@@ -20,6 +21,8 @@ async function tick() {
         await runGenerateNarrationJob(prisma, job);
       } else if (job.kind === 'EXTRACT_CLIPS') {
         await runExtractClipsJob(prisma, job);
+      } else if (job.kind === 'GENERATE_VOCABULARY') {
+        await runGenerateVocabularyJob(prisma, job);
       }
     } catch (error) {
       await failJob(prisma, job.id, {

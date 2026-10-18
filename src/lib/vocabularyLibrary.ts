@@ -26,7 +26,7 @@ export async function indexPublishedVocabulary(tx: Prisma.TransactionClient, les
     const translation = learning.translations.find(t => ['hy', 'am'].includes(t.languageCode))?.translation.trim();
     if (!translation) continue;
     const asset = await tx.audioAsset.findUniqueOrThrow({ where: { id: learning.clip.id } });
-    if (asset.textId !== text.textId || asset.kind !== 'WORD_CLIP' || asset.sha256 !== learning.clip.sha256 || !validReaderAsset(asset))
+    if ((learning.clipSource !== 'VOCABULARY' && asset.textId !== text.textId) || asset.kind !== 'WORD_CLIP' || asset.sha256 !== learning.clip.sha256 || !validReaderAsset(asset))
       throw new Error('Vocabulary clip does not match its published source');
     const language = text.sourceLanguage.trim().toLowerCase();
     const normalizedText = normalizeVocabulary(word.text);
@@ -35,7 +35,9 @@ export async function indexPublishedVocabulary(tx: Prisma.TransactionClient, les
     const normalizedTranslation = normalizeVocabulary(translation);
     const meaning = await tx.vocabularyMeaning.upsert({ where: { termId_normalizedTranslation: { termId: term.id, normalizedTranslation } },
       create: { termId: term.id, translation, normalizedTranslation }, update: {} });
-    const recording = await tx.vocabularyRecording.upsert({ where: { meaningId_assetId: { meaningId: meaning.id, assetId: asset.id } },
+    const existing = learning.clipSource === 'VOCABULARY' ? await tx.vocabularyRecording.findFirst({ where: { meaningId: meaning.id, assetId: asset.id, voiceId: narration.voiceId } }) : null;
+    if (learning.clipSource === 'VOCABULARY' && !existing) throw new Error('Shared vocabulary recording does not match the published meaning and voice');
+    const recording = existing ?? await tx.vocabularyRecording.upsert({ where: { meaningId_assetId: { meaningId: meaning.id, assetId: asset.id } },
       create: { meaningId: meaning.id, assetId: asset.id, narrationId: narration.id, voiceId: narration.voiceId, model: narration.model }, update: {} });
     await tx.vocabularyUsage.upsert({ where: { textReleaseId_occurrenceId: { textReleaseId: text.textReleaseId, occurrenceId: word.id } },
       create: { recordingId: recording.id, lessonId, textReleaseId: text.textReleaseId, occurrenceId: word.id,
@@ -57,7 +59,7 @@ export async function vocabularyDetail(db: Db, id: string) {
   return { id: term.id, text: term.displayText, language: term.language, meanings: term.meanings.map(meaning => ({
     id: meaning.id, translation: meaning.translation,
     preferences: meaning.preferences.map(p => ({ voiceId: p.voiceId, recordingId: p.recordingId })),
-    recordings: meaning.recordings.map(recording => ({ id: recording.id, voiceId: recording.voiceId, model: recording.model,
+    recordings: meaning.recordings.map(recording => ({ id: recording.id, voiceId: recording.voiceId, model: recording.model, standalone: recording.standalone,
       asset: assetDto(recording.asset), available: validReaderAsset(recording.asset),
       usages: recording.usages.map(usage => ({ lessonId: usage.lessonId, lessonTitle: usage.lesson.title,
         textId: usage.textRelease.textId, textReleaseId: usage.textReleaseId, occurrenceId: usage.occurrenceId,

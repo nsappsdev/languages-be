@@ -9,6 +9,7 @@ import { runGenerateNarrationJob } from '../../lib/textAudioPipeline';
 import { setSelection, setTranslations } from '../../lib/textVocabulary';
 import { readAudioAssetRange, writeAudioAsset } from '../../lib/audioAssetStorage';
 import { decodeWav } from '../../lib/pcmWav';
+import { prepareLegacyClips } from './helpers/legacyClips';
 
 // Explicit synthetic ElevenLabs provider mock. No external network or paid calls.
 describe('atomic lesson publication and unchanged mobile reader contract', () => {
@@ -48,15 +49,16 @@ describe('atomic lesson publication and unchanged mobile reader contract', () =>
       const entries = await setSelection(prisma, { textId: item.id, alignmentId: ws.currentAlignmentId!, changes: cats.map(o => ({ occurrenceId: o.id, selected: true })) });
       for (const [index, entry] of entries.entries()) await setTranslations(prisma, { textId: item.id, entryId: entry.id,
         translations: [{ languageCode: 'hy', translation: index === 0 ? 'կատու' : 'երկրորդ կատու' }] });
+      await prepareLegacyClips(prisma, item.id);
       texts.push({ id: item.id as string, ws, cats, entries });
     }
     return { lesson, texts, publish: () => api(`/admin/lessons/${lesson.id}/publish`, 'POST', {}) };
   }
   const countReleases = (ids: string[]) => prisma.textRelease.count({ where: { textId: { in: ids } } });
 
-  it('publishes all ordered texts once under concurrent clicks, extracts exact narration slices, and immediately lists them for learners', async () => {
+  it('publishes all ordered texts once under concurrent clicks and preserves historical extracted clips for learners', async () => {
     const f = await fixture(2);
-    assert.equal(await prisma.wordClip.count({ where: { textId: { in: f.texts.map(t => t.id) } } }), 0);
+    assert.equal(await prisma.wordClip.count({ where: { textId: { in: f.texts.map(t => t.id) } } }), 4);
     assert.equal((await api(`/admin/lessons/${f.lesson.id}/publish`, 'POST', {}, learnerToken)).status, 403);
     const results = await Promise.all([f.publish(), f.publish(), f.publish()]);
     assert.deepEqual(results.map(r => r.status).sort(), [200, 200, 201]);
@@ -94,7 +96,7 @@ describe('atomic lesson publication and unchanged mobile reader contract', () =>
     assert.ok(result.body.texts[0].readiness.reasonCodes.includes('SELECTED_MISSING_TRANSLATION'));
     assert.ok(result.body.texts[1].readiness.reasonCodes.includes('ALIGNMENT_NEEDS_REVIEW'));
     assert.equal(await countReleases(f.texts.map(t => t.id)), 0);
-    assert.equal(await prisma.wordClip.count({ where: { textId: { in: f.texts.map(t => t.id) } } }), 0);
+    assert.equal(await prisma.wordClip.count({ where: { textId: { in: f.texts.map(t => t.id) } } }), 4);
     assert.equal((await api(`/learner/lessons/${f.lesson.id}/manifest`, 'GET', undefined, learnerToken)).status, 404);
   });
 
@@ -108,7 +110,7 @@ describe('atomic lesson publication and unchanged mobile reader contract', () =>
     assert.equal(result.status, 422);
     assert.equal(result.body.texts[0].textId, f.texts[1].id);
     assert.equal(await countReleases(f.texts.map(t => t.id)), 0);
-    assert.equal(await prisma.wordClip.count({ where: { textId: { in: f.texts.map(t => t.id) } } }), 0);
+    assert.equal(await prisma.wordClip.count({ where: { textId: { in: f.texts.map(t => t.id) } } }), 4);
     assert.equal((await prisma.lesson.findUniqueOrThrow({ where: { id: f.lesson.id } })).currentPublicationId, null);
   });
 
@@ -119,11 +121,15 @@ describe('atomic lesson publication and unchanged mobile reader contract', () =>
     await prisma.wordClip.update({ where: { id: oldClip.id }, data: { startSample: oldClip.startSample + 1 } });
     let readiness = await api(`/admin/lessons/${f.lesson.id}/texts/${t.id}/readiness`);
     assert.equal(readiness.body.readiness.selectedMissingClipCount, 1, 'stale clip boundary is not current');
+    assert.equal((await f.publish()).status, 422, 'publication never silently repairs or generates word audio');
+    await prepareLegacyClips(prisma, t.id);
     const repaired = await f.publish(); assert.equal(repaired.status, 201);
     assert.notEqual((await prisma.wordClip.findUniqueOrThrow({ where: { id: oldClip.id } })).assetId, oldClip.assetId);
     const currentClip = await prisma.wordClip.findUniqueOrThrow({ where: { id: oldClip.id } });
     await prisma.audioAsset.update({ where: { id: currentClip.assetId }, data: { state: 'QUARANTINED' } });
     assert.equal((await api(`/admin/lessons/${f.lesson.id}/texts/${t.id}/readiness`)).body.readiness.selectedMissingClipCount, 1);
+    assert.equal((await f.publish()).status, 422);
+    await prepareLegacyClips(prisma, t.id);
     assert.equal((await f.publish()).status, 201);
     await saveContentRevision(prisma, { textId: t.id, actorId: admin.user.id, text: 'Changed text.', sourceLanguage: 'en' });
     // Even corrupt stale pointers cannot make an old narration match the new revision.
@@ -196,5 +202,16 @@ describe('atomic lesson publication and unchanged mobile reader contract', () =>
     assert.equal(workspace.currentContentRevisionId, revised.revision.id);
     assert.equal(workspace.currentNarrationId, null); assert.equal(workspace.currentAlignmentId, null);
     assert.equal((await prisma.audioJob.findUniqueOrThrow({ where: { id: late.id } })).status, 'SUCCEEDED');
+  });
+
+  it('bulk selects all texts of one pinned lesson without adding words from another lesson', async () => {
+    const f = await fixture(2), other = await fixture();
+    const published = await f.publish(); await other.publish();
+    const path = `/learner/publications/${published.body.publicationId}/activate-vocabulary`;
+    assert.equal((await api(path, 'POST', { clientUpdatedAt: new Date().toISOString() }, learnerToken)).body.activatedCount, 4);
+    const words = (await api('/learner/words', 'GET', undefined, learnerToken)).body.words;
+    assert.equal(words.filter((w: any) => w.lessonId === f.lesson.id && w.status === 'LEARNING').length, 4);
+    assert.equal(words.filter((w: any) => w.lessonId === other.lesson.id && w.status === 'LEARNING').length, 0);
+    assert.equal((await api(path, 'POST', { clientUpdatedAt: '2099-01-01T00:00:00.000Z' }, learnerToken)).status, 400);
   });
 });

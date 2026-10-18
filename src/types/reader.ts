@@ -20,6 +20,7 @@ export interface ReaderOccurrence {
     entryId: string;
     translations: { languageCode: string; translation: string }[];
     clip: ReaderAsset;
+    clipSource?: 'VOCABULARY';
     cutStartSample: number;
     cutEndSample: number;
   };

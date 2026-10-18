@@ -3,6 +3,7 @@ import { after, before, describe, it } from 'node:test';
 import { startTestServer, createTestAdminUser, prisma, type TestServer } from './helpers/authoringTestApp';
 import { installFakeElevenLabsFetch } from './helpers/fakeElevenLabsFetch';
 import { runGenerateNarrationJob } from '../../lib/textAudioPipeline';
+import { prepareLegacyClips } from './helpers/legacyClips';
 
 describe('text authoring API (generate -> align -> select -> translate -> publish)', () => {
   let server: TestServer;
@@ -160,7 +161,8 @@ describe('text authoring API (generate -> align -> select -> translate -> publis
     });
     assert.equal(translated.status, 200);
 
-    // Single publish extracts missing clips without a second provider request.
+    // Historical saved clips remain publishable during rollout.
+    await prepareLegacyClips(prisma, textOne.textId);
     const published = await api(`/api/admin/lessons/${textOne.lessonId}/publish`, { method: 'POST', body: '{}' });
     assert.equal(published.status, 201);
 

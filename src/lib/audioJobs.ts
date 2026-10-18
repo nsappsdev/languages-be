@@ -114,11 +114,27 @@ export async function createOrReplayJob(client: TxClient, input: CreateOrReplayJ
 
 const LEASE_MS = 2 * 60 * 1000;
 
+/** A crashed vocabulary dispatch has an uncertain outcome and must not be retried automatically. */
+export async function failExpiredVocabularyJobs(prisma: PrismaClient) {
+  await prisma.$transaction(async tx => {
+    const expired = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "AudioJob"
+      WHERE kind = 'GENERATE_VOCABULARY' AND status = 'RUNNING' AND "leaseUntil" < NOW()
+      LIMIT 50 FOR UPDATE SKIP LOCKED`;
+    const ids = expired.map(job => job.id);
+    if (!ids.length) return;
+    await tx.audioJob.updateMany({ where: { id: { in: ids } }, data: { status: 'FAILED', leaseUntil: null,
+      errorCode: 'PROVIDER_UNKNOWN_OUTCOME', errorMessage: 'Audio preparation was interrupted. Completed recordings are saved; review pending provider outcomes before trying again.', retryable: false } });
+    await tx.vocabularyAudio.updateMany({ where: { ownerJobId: { in: ids }, status: 'RUNNING' },
+      data: { status: 'FAILED', errorCode: 'PROVIDER_UNKNOWN_OUTCOME', retryable: false } });
+  });
+}
+
 /**
  * Claims the oldest QUEUED job using `FOR UPDATE SKIP LOCKED`, so multiple
  * worker processes/replicas never dispatch the same job twice.
  */
 export async function claimNextQueuedJob(prisma: PrismaClient) {
+  await failExpiredVocabularyJobs(prisma);
   return prisma.$transaction(async (tx) => {
     const rows = await tx.$queryRaw<{ id: string }[]>`
       SELECT id FROM "AudioJob" WHERE status = 'QUEUED' ORDER BY "createdAt" ASC LIMIT 1 FOR UPDATE SKIP LOCKED
@@ -182,6 +198,13 @@ export async function requeueJob(prisma: PrismaClient, jobId: string) {
       const active = await tx.audioJob.findFirst({ where: { textId: job.textId, kind: job.kind, status: { in: ['QUEUED', 'RUNNING'] } } });
       if (active) throw new JobConflictError('Narration is already in progress');
       await tx.textWorkspace.update({ where: { textId: job.textId }, data: { currentNarrationId: null, currentAlignmentId: null, approvedTextReleaseId: null, draftVersion: { increment: 1 } } });
+    }
+    if (job.kind === 'GENERATE_VOCABULARY') {
+      const draft = job.requestPayload as { draftVersion: number; alignmentId: string };
+      if (workspace.draftVersion !== draft.draftVersion || workspace.currentAlignmentId !== draft.alignmentId)
+        throw new JobConflictError('The draft changed. Check vocabulary audio again.');
+      if (await tx.audioJob.findFirst({ where: { textId: job.textId, kind: job.kind, status: { in: ['QUEUED', 'RUNNING'] } } }))
+        throw new JobConflictError('Word audio is already being prepared.');
     }
     return tx.audioJob.update({ where: { id: jobId }, data: { status: 'QUEUED', errorCode: null, errorMessage: null } });
   });

@@ -7,6 +7,7 @@ import { runGenerateNarrationJob } from '../../lib/textAudioPipeline';
 import { readAudioAssetRange } from '../../lib/audioAssetStorage';
 import { decodeWav } from '../../lib/pcmWav';
 import { ReaderManifest } from '../../types/reader';
+import { prepareLegacyClips } from './helpers/legacyClips';
 
 describe('bulk vocabulary import and phrase publication', () => {
   let server: TestServer;
@@ -45,6 +46,7 @@ describe('bulk vocabulary import and phrase publication', () => {
       { occurrenceId: f.words[4].id, translation: 'կատու' },
     ]);
     assert.equal(result.status, 200); assert.equal(result.body.importedCount, 3);
+    await prepareLegacyClips(prisma, f.textId);
     const published = await f.publish(); assert.equal(published.status, 201);
     const publication = await prisma.lessonPublication.findUniqueOrThrow({ where: { id: published.body.publicationId } });
     const text = (publication.manifest as unknown as ReaderManifest).texts[0];
@@ -106,6 +108,7 @@ describe('bulk vocabulary import and phrase publication', () => {
     assert.equal((await select(true, f.words[2].id)).status, 200);
     const fresh = (await api(f.path + '/occurrences')).body;
     assert.equal((await f.import([{ occurrenceId: f.words[1].id, endOccurrenceId: f.words[2].id, translation: 'հոգ տանել' }], fresh.draftVersion)).status, 200);
+    await prepareLegacyClips(prisma, f.textId);
     assert.equal((await f.publish()).status, 201);
     assert.equal((await select(false)).status, 200);
     const removed = await f.publish();

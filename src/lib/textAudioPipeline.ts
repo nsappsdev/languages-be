@@ -140,8 +140,8 @@ export async function runGenerateNarrationJob(prisma: PrismaClient, job: AudioJo
   });
 }
 
-// Kept for already queued local extraction jobs during rollout; publication now
-// performs extraction directly. Old jobs cannot attach clips to a new narration.
+// Kept for already queued local extraction jobs during rollout. New vocabulary
+// preparation uses standalone speech; old jobs cannot attach to a new narration.
 export async function runExtractClipsJob(prisma: PrismaClient, job: AudioJob) {
   const payload = job.requestPayload as unknown as ExtractClipsPayload;
   try {

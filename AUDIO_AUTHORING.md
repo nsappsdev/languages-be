@@ -1,6 +1,6 @@
 # Text authoring and publication
 
-One ordered `LessonItem` is one text. `TextContentRevision` is authoritative. The admin creates a lesson with one or more pasted texts, explicitly saves and generates ElevenLabs narration, selects aligned word occurrences, adds contextual Armenian translations, and clicks **Publish** (or **Update published lesson**). Missing word clips are extracted automatically from that same narration. Repeated words have independent occurrence identities and translations. Texts may be added, reordered, or removed; removal archives the item.
+One ordered `LessonItem` is one text. `TextContentRevision` is authoritative. The admin creates a lesson with one or more pasted texts, explicitly saves and generates ElevenLabs narration, selects aligned word occurrences, adds contextual Armenian translations, prepares vocabulary audio, and clicks **Publish** (or **Update published lesson**). Vocabulary preparation reuses saved audio and generates missing words separately. Repeated words have independent occurrence identities and translations, with shared recordings. Texts may be added, reordered, or removed; removal archives the item. See **Standalone vocabulary audio (2026-10-18)** below for the current generation and rollout contract; dated verification sections describe earlier behavior.
 
 There is no visible approval stage. `TextRelease` and `LessonPublication` remain immutable internally so existing mobile sessions are isolated from edits. Unchanged texts reuse their release identity on a lesson update, preserving their learner state. Unpublish withdraws all versions of a lesson. Lesson visibility is derived exclusively from `currentPublicationId`.
 
@@ -30,13 +30,13 @@ All paths below are under `/api`. Authoring endpoints require an admin bearer to
 - `GET .../texts/:textId/occurrences`: current aligned sentences and occurrences, translations and verified current clips.
 - `PATCH .../texts/:textId/selection`: `{ alignmentId, changes: [{ occurrenceId, selected }] }`.
 - `PATCH .../texts/:textId/vocabulary/:entryId`: `{ translations: [{ languageCode: "hy", translation }] }`. Historical `am` input is normalized to `hy`. Every selected occurrence requires a nonblank Armenian translation; other languages alone do not satisfy readiness.
-- `GET .../texts/:textId/readiness`: `canPublish` permits local clip preparation; `readyForPublication` also requires all clips to exist and validate. Zero selected learning words is allowed.
+- `GET .../texts/:textId/readiness`: both `canPublish` and `readyForPublication` require all selected words to have translations and valid saved audio. Zero selected learning words is allowed.
 - `POST /admin/lessons/:lessonId/publish`: no body, or `{}`. Client-supplied release IDs are rejected.
 - `POST /admin/lessons/:lessonId/unpublish`: no body, or `{}`.
 
 Publish returns `201 { publicationId, replay: false, status: "PUBLISHED" }`, or `200 { publicationId, replay: true, status: "PUBLISHED" }` for an unchanged current publication. On success the lesson is immediately visible at `GET /learner/lessons`. Readiness failures return `422 { code: "LESSON_NOT_READY", message, texts: [{ textId, order, readiness, message? }] }`; every failing text is reported during preflight. No partial publication is committed.
 
-Publish locks the lesson row; all draft writers take the same lock. It validates every active text, exact current revision/narration/alignment lineage, ElevenLabs provenance, asset bytes/hash, alignment quality, Armenian translations, and clip lineage/bounds. It extracts missing clips locally from aligned sample boundaries, revalidates, then creates releases/publication and changes the pointer in one database transaction. Concurrent calls serialize across server processes and replay the same publication. No separate word TTS or estimated text-length timings are used. `NEEDS_REVIEW` alignment and overlapping speech spans block publication.
+Publish locks the lesson row; all draft writers take the same lock. It validates every active text, exact current revision/narration/alignment lineage, ElevenLabs provenance, asset bytes/hash and WAV metadata, alignment quality, Armenian translations, saved recordings, and narration handoff bounds. It creates releases/publication and changes the pointer in one database transaction. Concurrent calls serialize across server processes and replay the same publication. Audio preparation is an explicit earlier operation; publication dispatches no provider requests and performs no extraction. `NEEDS_REVIEW` alignment and overlapping speech spans block publication.
 
 The transaction has a 60-second timeout. A timeout/failure leaves the previous publication intact. Immutable audio files written before a rollback may remain unreferenced; they are deliberately not deleted automatically. Inventory them before an explicit cleanup. For unusually large lessons, a later asynchronous publication job may be appropriate; the current implementation is synchronous and the admin displays progress while waiting.
 
@@ -219,7 +219,7 @@ Logs and migration-fixture scripts are preserved under workspace `.local-refacto
 
 No unresolved functional defect was reproduced. One intermediate integration run competed with the smoke server's worker on the same disposable database; stopping that worker and rerunning the suite passed. Keep smoke workers stopped during integration tests. The sandbox initially prevented local PostgreSQL access and the Next.js build's local port binding; reruns with the necessary local permissions passed. Existing browser-list freshness and Expo dependency-version advisories remain. Real provider response quality and native-device playback were not exercised; the provider was mocked and mobile production code was unchanged.
 
-Publication currently performs local extraction in a 60-second database transaction. A timeout preserves the previous publication, and files from a rolled-back operation are retained for later inventory. This limit and the absence of production inventory are the material rollout limitations.
+At that verification date publication performed local extraction in a 60-second database transaction. The 2026-10-18 standalone vocabulary flow replaces that extraction step with explicit audio preparation before publication.
 
 **Real ElevenLabs requests: 0.** Test and browser fixtures intercept the provider host and prohibit other non-loopback network access. No paid word TTS or narration was requested.
 
@@ -269,3 +269,53 @@ npm run vocabulary:backfill -- --apply
 ```
 
 The first command is a read-only inventory. The second applies idempotent indexing in batches, with one transaction per release. Run against the intended database and its existing `AUDIO_AUTHORING_STORAGE_ROOT`. It reads immutable release snapshots, verifies referenced clip bytes, skips legacy releases without snapshots, and stops on an invalid asset. It creates no files, audio jobs, provider requests, or new publications. After an interruption, correct the reported issue and rerun; completed releases are safe to revisit.
+
+## Standalone vocabulary audio (2026-10-18)
+
+After selecting words or phrases and saving Armenian translations, use **Check
+vocabulary audio**. The preview lists saved recordings to reuse and distinct
+missing words to generate. **Reuse saved audio & generate…** explicitly queues a
+`GENERATE_VOCABULARY` job. Full lesson narration remains a separate operation.
+Publishing never generates or extracts new word audio; missing word audio blocks
+publication until preparation succeeds.
+
+Reuse matches the normalized source phrase, source language, voice, and model.
+An existing preferred recording for the Armenian meaning is tried first. A
+recording for another meaning of the same phrase can share its audio while the
+lesson keeps its own translation. New recordings use the existing ElevenLabs
+adapter with only the selected word/phrase as input. They are saved as private
+shared assets with no owning text, indexed in Vocabulary before publication,
+and survive draft changes. Repeated occurrences and later lessons reuse the
+same asset. Existing extracted recordings remain available for reuse and
+historical publications are unchanged.
+
+A unique durable `VocabularyAudio` reservation prevents simultaneous requests
+from generating the same phrase and voice twice. Known safe provider failures
+can be retried by an explicit admin action. An uncertain charge outcome remains
+blocked for operator review. The worker renews its lease between words and
+surfaces expired dispatches as uncertain failures after a restart. No automatic provider retries or migration-time
+speech requests occur. Draft versions are checked before work and before
+attaching results; late recordings remain in the library without changing an
+edited draft.
+
+API: `GET /api/admin/lessons/:lessonId/texts/:textId/vocabulary/audio-plan`;
+`POST .../vocabulary/audio-jobs` with `{expectedDraftVersion}` and an
+`Idempotency-Key` header. Existing `/api/admin/audio-jobs/:jobId` supplies progress
+and a completion summary. `TextVocabularyEntry.recordingId` binds draft entries
+to saved recordings. Published learning occurrences with
+`clipSource: "VOCABULARY"` repeat the full saved clip; cut bounds still refer to
+the original narration and determine where reading resumes. Older manifests
+retain their existing playback behavior.
+
+Apply both 2026-10-18 migrations before starting the updated backend and worker.
+The enum addition is a separate migration so PostgreSQL commits it before the
+new partial index uses the enum value. Existing library backfill remains
+optional and never generates audio.
+
+Learners can use **Mark all as unknown** in a lesson. The authenticated
+`POST /api/learner/publications/:publicationId/activate-vocabulary` endpoint takes
+`{clientUpdatedAt}` and atomically selects unmarked learning occurrences across
+all texts in that pinned publication. It preserves learned states and newer
+individual choices. The ordinary per-word controls continue to work, and no
+background process reselects words after the learner removes them. The action
+requires a connection; the client syncs queued individual choices first.

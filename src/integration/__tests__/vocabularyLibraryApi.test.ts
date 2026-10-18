@@ -7,6 +7,7 @@ import { installFakeElevenLabsFetch } from './helpers/fakeElevenLabsFetch';
 import { runGenerateNarrationJob } from '../../lib/textAudioPipeline';
 import { ReaderManifest } from '../../types/reader';
 import { indexPublishedVocabulary } from '../../lib/vocabularyLibrary';
+import { prepareLegacyClips } from './helpers/legacyClips';
 
 describe('shared saved vocabulary recordings', () => {
   let server: TestServer, adminToken: string, learnerToken: string, restore: () => void;
@@ -37,6 +38,7 @@ describe('shared saved vocabulary recordings', () => {
     const occurrence = data.occurrences.find((o: any) => o.text === word);
     assert.equal((await api(path + '/vocabulary/import', 'POST', { alignmentId: data.alignmentId, expectedDraftVersion: data.draftVersion,
       entries: [{ occurrenceId: occurrence.id, endOccurrenceId: data.occurrences[2].id, translation }] })).status, 200);
+    await prepareLegacyClips(prisma, textId);
     return { lessonId, textId, path, word: `${word} together`, publish: () => api(`/admin/lessons/${lessonId}/publish`, 'POST', {}) };
   }
   async function manifest(lessonId: string) {
