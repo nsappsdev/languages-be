@@ -5,6 +5,8 @@ import { computeTextReadiness } from './textReadiness';
 import { computeContiguousCutBoundaries } from './wordClipExtraction';
 import { ReaderAsset, ReaderText } from '../types/reader';
 import { assertNonOverlappingRanges, resolveVocabularyRange } from './vocabularyRanges';
+import { normalizeVocabulary } from './vocabularyLibrary';
+import { decodeWav } from './pcmWav';
 
 type Db = Prisma.TransactionClient;
 
@@ -16,8 +18,9 @@ export function validReaderAsset(asset: AudioAsset | null | undefined): asset is
   if (!asset || asset.state !== 'READY' || !asset.sampleRate || !asset.frameCount || asset.byteLength <= 0) return false;
   try {
     const stored = readAudioAssetRange(asset.storageKey, 0, asset.byteLength);
-    return !!stored && stored.totalLength === asset.byteLength &&
-      crypto.createHash('sha256').update(stored.buffer).digest('hex') === asset.sha256;
+    if (!stored || stored.totalLength !== asset.byteLength || crypto.createHash('sha256').update(stored.buffer).digest('hex') !== asset.sha256) return false;
+    const wav = decodeWav(stored.buffer);
+    return wav.frameCount === asset.frameCount && wav.sampleRate === asset.sampleRate && wav.channels === asset.channels && wav.bitsPerSample === asset.bitDepth;
   } catch {
     return false;
   }
@@ -36,7 +39,7 @@ export async function inspectReaderDraft(db: Db, textId: string) {
     db.textNarration.findUnique({ where: { id: workspace.currentNarrationId ?? '' }, include: { asset: true } }),
     db.textAlignment.findUnique({ where: { id: workspace.currentAlignmentId ?? '' }, include: { occurrences: { orderBy: { ordinal: 'asc' } } } }),
     db.textVocabularyEntry.findMany({ where: { textId, alignmentId: workspace.currentAlignmentId ?? '', archivedAt: null },
-      include: { translations: true, wordClips: { include: { asset: true } } } }),
+      include: { translations: true, recording: { include: { asset: true, meaning: { include: { term: true } } } }, wordClips: { include: { asset: true } } } }),
     db.audioJob.findFirst({ where: { textId, kind: 'GENERATE_NARRATION', status: { in: ['QUEUED', 'RUNNING'] } } }),
   ]);
   const narrationValid = !activeNarration && !workspace.archivedAt && !!revision && revision.textId === textId && !!narration && narration.textId === textId &&
@@ -63,13 +66,25 @@ export async function inspectReaderDraft(db: Db, textId: string) {
       vocabularyCuts.set(entry.occurrenceId, { startSample: cuts.get(range.first.ordinal)!.startSample, endSample: cuts.get(range.last.ordinal)!.endSample });
     } catch { /* Invalid inactive historical entries do not participate in publication. */ }
   }
-  const clips = new Map(entries.map(entry => [entry.id, entry.wordClips.find(clip =>
+  const clips = new Map(entries.map(entry => {
+    const recording = entry.recording;
+    const range = ranges.get(entry.occurrenceId);
+    const cut = vocabularyCuts.get(entry.occurrenceId);
+    const translation = entry.translations.find(t => ['hy', 'am'].includes(t.languageCode))?.translation ?? '';
+    const shared = recording && range && cut && narration && revision && recording.voiceId === narration.voiceId &&
+      recording.meaning.term.language === revision.sourceLanguage.trim().toLowerCase() &&
+      recording.meaning.term.normalizedText === normalizeVocabulary(revision.text.slice(range.first.charStart, range.last.charEnd)) &&
+      recording.meaning.normalizedTranslation === normalizeVocabulary(translation) && recording.asset.kind === 'WORD_CLIP' && validReaderAsset(recording.asset)
+      ? { asset: recording.asset, startSample: cut.startSample, endSample: cut.endSample, shared: true } : undefined;
+    const legacy = !entry.recordingId ? entry.wordClips.find(clip =>
     alignmentValid && clip.textId === textId && clip.narrationId === narration!.id && clip.alignmentId === alignment!.id &&
     clip.occurrenceId === entry.occurrenceId && clip.entryId === entry.id && clip.asset.textId === textId && clip.asset.kind === 'WORD_CLIP' &&
     vocabularyCuts.get(entry.occurrenceId)?.startSample === clip.startSample && vocabularyCuts.get(entry.occurrenceId)?.endSample === clip.endSample &&
     clip.startSample >= 0 && clip.endSample > clip.startSample && clip.endSample <= narration!.asset.frameCount! &&
     clip.asset.frameCount === clip.endSample - clip.startSample && clip.asset.sampleRate === narration!.asset.sampleRate &&
-    validReaderAsset(clip.asset))]));
+    validReaderAsset(clip.asset)) : undefined;
+    return [entry.id, shared ?? (legacy ? { asset: legacy.asset, startSample: legacy.startSample, endSample: legacy.endSample, shared: false } : undefined)] as const;
+  }));
   const readiness = computeTextReadiness({
     narrationStatus: narrationValid ? 'READY' : 'MISSING',
     alignmentStatus: alignmentValid ? 'OK' : alignment?.status === 'NEEDS_REVIEW' || boundaries?.status === 'CUT_REVIEW_REQUIRED' ? 'NEEDS_REVIEW' : 'MISSING',
@@ -98,7 +113,7 @@ export async function inspectReaderDraft(db: Db, textId: string) {
           learning: entry && clip ? { entryId: entry.id,
             translations: entry.translations.filter(t => t.translation.trim()).map(t => ({
               languageCode: t.languageCode === 'am' ? 'hy' : t.languageCode, translation: t.translation.trim() })),
-            clip: assetDto(clip.asset), cutStartSample: clip.startSample, cutEndSample: clip.endSample } : null };
+            clip: assetDto(clip.asset), ...(clip.shared ? { clipSource: 'VOCABULARY' as const } : {}), cutStartSample: clip.startSample, cutEndSample: clip.endSample } : null };
       }),
     };
   }

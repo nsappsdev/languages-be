@@ -7,8 +7,8 @@ import { assertNonOverlappingRanges, resolveVocabularyRange } from './vocabulary
 /**
  * Text-local vocabulary: every entry is keyed by (alignmentId, occurrenceId),
  * never by spelling. The same word in two different texts (or even two
- * occurrences in the same text) always gets independent entries, translations
- * and clips (plan §1 item 3, mission requirement 6/9).
+ * occurrences in the same text) keeps independent entries and translations.
+ * Audio can reference a shared vocabulary recording.
  */
 
 export interface SelectionChange {

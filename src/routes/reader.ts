@@ -100,6 +100,28 @@ router.get('/learner/audio-assets/:assetId/content', authenticate, run(async (re
 
 const stateBase = z.object({ publicationId: z.string().min(1), textReleaseId: z.string().min(1),
   clientUpdatedAt: z.string().datetime().refine(value => Date.parse(value) <= Date.now() + 300000, 'Client time is too far in the future') });
+router.post('/learner/publications/:publicationId/activate-vocabulary', authenticate, run(async (req, res) => {
+  const parsed = stateBase.pick({ clientUpdatedAt: true }).strict().safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ message: 'Invalid lesson test request' });
+  const { publication, manifest } = await getPublication(req.params.publicationId);
+  const userId = req.user!.id, clientUpdatedAt = new Date(parsed.data.clientUpdatedAt);
+  const words = await prisma.$transaction(async tx => {
+    await lockLesson(tx, publication.lessonId);
+    const accessible = await tx.lessonPublication.findFirst({ where: { id: publication.id, revokedAt: null, lesson: { currentPublicationId: { not: null } } } });
+    if (!accessible) throw new ReaderReleaseError(404, 'Published lesson unavailable');
+    const selected = manifest.texts.flatMap(text => text.occurrences.filter(o => o.learning).map(o => ({
+      userId, publicationId: publication.id, textReleaseId: text.textReleaseId, occurrenceId: o.id, status: 'LEARNING' as const, clientUpdatedAt,
+    })));
+    await tx.readerWordState.createMany({ data: selected, skipDuplicates: true });
+    // Preserve learned words and newer individual choices; retries add no duplicates.
+    await tx.readerWordState.updateMany({ where: { userId, status: 'NEW', clientUpdatedAt: { lt: clientUpdatedAt },
+      OR: selected.map(w => ({ textReleaseId: w.textReleaseId, occurrenceId: w.occurrenceId })) },
+      data: { status: 'LEARNING', clientUpdatedAt, publicationId: publication.id } });
+    return tx.readerWordState.findMany({ where: { userId, textReleaseId: { in: manifest.texts.map(t => t.textReleaseId) } } });
+  });
+  return res.json({ words, activatedCount: words.filter(w => w.status === 'LEARNING').length });
+}));
+
 const wordSchema = stateBase.extend({ occurrenceId: z.string().min(1), status: z.enum(['NEW', 'LEARNING', 'LEARNED']) });
 router.put('/learner/word-state', authenticate, run(async (req, res) => {
   const parsed = wordSchema.safeParse(req.body);

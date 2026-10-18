@@ -10,6 +10,7 @@ import { inspectReaderDraft, ReaderReleaseError } from '../lib/readerRelease';
 import { createOrReplayJob, requeueJob, JobConflictError } from '../lib/audioJobs';
 import { TextWorkspaceError } from '../lib/textWorkspaces';
 import { lockText } from '../lib/authoringTransaction';
+import { requestVocabularyAudio, vocabularyAudioPlan } from '../lib/standaloneVocabulary';
 
 const router = Router();
 const run = (handler: (req: AuthenticatedRequest, res: Response) => Promise<unknown>) =>
@@ -55,7 +56,7 @@ router.get(
     const context = await loadTextContext(req.params.lessonId, req.params.textId);
     if (!context) return res.status(404).json({ message: 'Text not found' });
 
-    const [contentRevision, narration, alignment, activeJob] = await Promise.all([
+    const [contentRevision, narration, alignment, activeJob, vocabularyJob] = await Promise.all([
       context.workspace.currentContentRevisionId
         ? prisma.textContentRevision.findUnique({ where: { id: context.workspace.currentContentRevisionId } })
         : null,
@@ -66,6 +67,7 @@ router.get(
         ? prisma.textAlignment.findUnique({ where: { id: context.workspace.currentAlignmentId } })
         : null,
       prisma.audioJob.findFirst({ where: { textId: context.item.id, kind: 'GENERATE_NARRATION', status: { in: ['QUEUED', 'RUNNING'] } }, select: { id: true } }),
+      prisma.audioJob.findFirst({ where: { textId: context.item.id, kind: 'GENERATE_VOCABULARY', status: { in: ['QUEUED', 'RUNNING'] } }, select: { id: true } }),
     ]);
 
     return res.json({
@@ -74,6 +76,7 @@ router.get(
         lessonId: context.item.lessonId,
         draftVersion: context.workspace.draftVersion,
         activeNarrationJobId: activeJob?.id ?? null,
+        activeVocabularyJobId: vocabularyJob?.id ?? null,
         contentRevision,
         narration: narration
           ? {
@@ -183,6 +186,25 @@ router.post(
   }),
 );
 
+router.get('/admin/lessons/:lessonId/texts/:textId/vocabulary/audio-plan', authenticate, run(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const context = await loadTextContext(req.params.lessonId, req.params.textId);
+  if (!context) return res.status(404).json({ message: 'Text not found' });
+  res.setHeader('Cache-Control', 'private, no-store');
+  return res.json(await vocabularyAudioPlan(prisma, context.item.id));
+}));
+
+router.post('/admin/lessons/:lessonId/texts/:textId/vocabulary/audio-jobs', authenticate, run(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const context = await loadTextContext(req.params.lessonId, req.params.textId);
+  if (!context) return res.status(404).json({ message: 'Text not found' });
+  const parsed = z.object({ expectedDraftVersion: z.number().int().nonnegative() }).strict().safeParse(req.body);
+  const key = req.header('Idempotency-Key');
+  if (!parsed.success || !key || key.length > 200) return res.status(400).json({ message: 'Provide the draft version and an Idempotency-Key header.' });
+  const { job, replay } = await requestVocabularyAudio(prisma, context.item.id, req.user!.id, key, parsed.data.expectedDraftVersion);
+  return res.status(202).json({ job: { id: job.id, status: job.status }, replay });
+}));
+
 router.get('/admin/audio-jobs/:jobId', authenticate, run(async (req: AuthenticatedRequest, res) => {
   if (!requireAdmin(req, res)) return;
   const job = await prisma.audioJob.findUnique({ where: { id: req.params.jobId } });
@@ -257,7 +279,7 @@ router.get(
           endOccurrenceId: entry?.endOccurrenceId ?? null,
           selected: entry?.selected ?? false,
           translations: entry?.translations ?? [],
-          clipAssetId: entry ? draft.clips.get(entry.id)?.assetId ?? null : null,
+          clipAssetId: entry ? draft.clips.get(entry.id)?.asset.id ?? null : null,
         };
       }),
     });

@@ -27,7 +27,7 @@ export function computeTextReadiness(input: ComputeTextReadinessInput): TextRead
   const selectedMissingClipCount = selected.filter(entry => !entry.hasCurrentClip).length;
   if (selectedMissingTranslationCount) reasonCodes.push('SELECTED_MISSING_TRANSLATION');
   if (selectedMissingClipCount) reasonCodes.push('SELECTED_MISSING_CLIP');
-  const canPublish = narrationValid && input.alignmentStatus === 'OK' && selectedMissingTranslationCount === 0;
+  const canPublish = narrationValid && input.alignmentStatus === 'OK' && selectedMissingTranslationCount === 0 && selectedMissingClipCount === 0;
   return { narrationValid, alignmentStatus: input.alignmentStatus, selectedCount: selected.length,
     selectedMissingTranslationCount, selectedMissingClipCount,
     eligibleEntryIds: selected.filter(entry => entry.hasNonBlankTranslation && entry.hasCurrentClip).map(entry => entry.id),

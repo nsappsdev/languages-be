@@ -125,6 +125,7 @@ export async function generateNarration(
   try {
     response = await fetchImpl(url, {
       method: 'POST',
+      signal: AbortSignal.timeout(options.timeoutMs ?? 120000),
       headers: {
         'xi-api-key': options.apiKey,
         'content-type': 'application/json',

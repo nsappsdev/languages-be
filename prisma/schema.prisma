@@ -282,8 +282,8 @@ enum AudioAssetState {
 
 model AudioAsset {
   id          String           @id @default(cuid())
-  textId      String
-  workspace   TextWorkspace    @relation(fields: [textId], references: [textId], onDelete: Cascade)
+  textId      String?
+  workspace   TextWorkspace?   @relation(fields: [textId], references: [textId], onDelete: Cascade)
   kind        AudioAssetKind
   storageKey  String           @unique
   mimeType    String
@@ -299,6 +299,7 @@ model AudioAsset {
   narrations  TextNarration[]
   wordClips   WordClip[]
   libraryRecordings VocabularyRecording[]
+  vocabularyAudio VocabularyAudio[]
 
   @@index([textId, kind])
 }
@@ -391,6 +392,8 @@ model TextVocabularyEntry {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   archivedAt   DateTime?
+  recordingId  String?
+  recording    VocabularyRecording? @relation(fields: [recordingId], references: [id], onDelete: Restrict)
 
   translations TextVocabularyTranslation[]
   wordClips    WordClip[]
@@ -451,8 +454,8 @@ model TextRelease {
   @@index([textId, createdAt])
 }
 
-// Shared vocabulary indexes immutable published clips; it never copies audio
-// or changes a lesson's contextual translation, alignment, or recording.
+// Shared vocabulary stores reusable standalone recordings and references
+// historical contextual clips while preserving lesson translations and releases.
 model VocabularyTerm {
   id             String @id @default(cuid())
   language       String
@@ -460,6 +463,7 @@ model VocabularyTerm {
   displayText    String
   createdAt      DateTime @default(now())
   meanings       VocabularyMeaning[]
+  audio          VocabularyAudio[]
 
   @@unique([language, normalizedText])
 }
@@ -482,15 +486,38 @@ model VocabularyRecording {
   meaning     VocabularyMeaning @relation(fields: [meaningId], references: [id], onDelete: Restrict)
   assetId     String
   asset       AudioAsset @relation(fields: [assetId], references: [id], onDelete: Restrict)
-  narrationId String
-  narration   TextNarration @relation(fields: [narrationId], references: [id], onDelete: Restrict)
+  narrationId String?
+  narration   TextNarration? @relation(fields: [narrationId], references: [id], onDelete: Restrict)
+  standalone  Boolean @default(false)
   voiceId     String
   model       String
   createdAt   DateTime @default(now())
   usages      VocabularyUsage[]
   preferredBy VocabularyPreference[]
+  draftEntries TextVocabularyEntry[]
 
   @@unique([meaningId, assetId])
+}
+
+// One durable dispatch reservation per spelling, language, voice and model.
+// Shared files are independent of lessons and translations. Uncertain provider
+// outcomes remain blocked rather than silently dispatching a second paid call.
+model VocabularyAudio {
+  id          String @id @default(cuid())
+  termId      String
+  term        VocabularyTerm @relation(fields: [termId], references: [id], onDelete: Restrict)
+  voiceId     String
+  model       String
+  status      AudioJobStatus
+  ownerJobId  String
+  assetId     String?
+  asset       AudioAsset? @relation(fields: [assetId], references: [id], onDelete: Restrict)
+  errorCode   String?
+  retryable   Boolean @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([termId, voiceId, model])
 }
 
 model VocabularyUsage {
@@ -509,8 +536,8 @@ model VocabularyUsage {
   @@index([recordingId])
 }
 
-// A preference is explicit and scoped to both meaning and voice. Spelling
-// alone must never replace a contextual pronunciation with a different one.
+// A preferred choice is explicit and scoped to both meaning and voice.
+// Lesson publication pins its chosen recording independently of future changes.
 model VocabularyPreference {
   meaningId   String
   meaning     VocabularyMeaning @relation(fields: [meaningId], references: [id], onDelete: Restrict)
@@ -570,6 +597,7 @@ model ReaderProgress {
 enum AudioJobKind {
   GENERATE_NARRATION
   EXTRACT_CLIPS
+  GENERATE_VOCABULARY
 }
 
 enum AudioJobStatus {

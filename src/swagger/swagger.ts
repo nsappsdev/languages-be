@@ -607,7 +607,7 @@ const definition = {
     '/admin/lessons/{lessonId}/publish': {
       post: {
         tags: [ 'Text authoring' ],
-        summary: 'Atomically publish all current texts; extract missing clips from existing narration',
+        summary: 'Atomically publish all current texts after vocabulary audio is prepared',
         security: [ { bearerAuth: [] } ],
         parameters: [ { name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } } ],
         responses: {
@@ -636,6 +636,30 @@ const definition = {
           content: { 'application/json': { schema: { type: 'object', additionalProperties: false } } }
         }
       }
+    },
+    '/admin/lessons/{lessonId}/texts/{textId}/vocabulary/audio-plan': {
+      get: {
+        tags: ['Text authoring'], summary: 'Preview reusable recordings and missing standalone word audio', security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } }, { name: 'textId', in: 'path', required: true, schema: { type: 'string' } }],
+        responses: { '200': { description: 'Draft version, voice, entries, reuseCount and distinct generateCount' }, '403': { description: 'Admin access required' }, '422': { description: 'Save narration, selections and Armenian translations first' } },
+      },
+    },
+    '/admin/lessons/{lessonId}/texts/{textId}/vocabulary/audio-jobs': {
+      post: {
+        tags: ['Text authoring'], summary: 'Reuse saved vocabulary audio and generate only missing words', security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } }, { name: 'textId', in: 'path', required: true, schema: { type: 'string' } },
+          { name: 'Idempotency-Key', in: 'header', required: true, schema: { type: 'string', maxLength: 200 } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: false, required: ['expectedDraftVersion'], properties: { expectedDraftVersion: { type: 'integer', minimum: 0 } } } } } },
+        responses: { '202': { description: 'Durable job queued or replayed; poll the existing audio-job endpoint' }, '409': { description: 'Stale draft, conflicting key or another active job' }, '503': { description: 'Missing audio needs provider configuration' } },
+      },
+    },
+    '/learner/publications/{publicationId}/activate-vocabulary': {
+      post: {
+        tags: ['Reader'], summary: 'Mark unmarked learning words across a lesson as unknown', security: [{ bearerAuth: [] }],
+        parameters: [{ name: 'publicationId', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', additionalProperties: false, required: ['clientUpdatedAt'], properties: { clientUpdatedAt: { type: 'string', format: 'date-time' } } } } } },
+        responses: { '200': { description: 'Updated per-learner word states and activatedCount; learned states and newer choices are preserved' }, '400': { description: 'Invalid timestamp' }, '404': { description: 'Publication unavailable or withdrawn' } },
+      },
     },
     '/admin/lessons/{lessonId}/unpublish': {
       post: {
@@ -733,7 +757,7 @@ const definition = {
     '/admin/lessons/{lessonId}/texts/{textId}/readiness': {
       get: {
         tags: [ 'Text authoring' ],
-        summary: 'Check publication readiness; missing clips are prepared on Publish',
+        summary: 'Check publication readiness; selected words require saved audio',
         security: [ { bearerAuth: [] } ],
         parameters: [
           { name: 'lessonId', in: 'path', required: true, schema: { type: 'string' } },

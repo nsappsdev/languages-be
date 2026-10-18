@@ -11,10 +11,11 @@ import { indexPublishedVocabulary } from './vocabularyLibrary';
 
 type Draft = Awaited<ReturnType<typeof inspectReaderDraft>>;
 
-// Local PCM extraction only. Never calls a speech provider. Files are immutable;
+// Compatibility for already queued legacy extraction jobs and historical fixtures.
+// New lesson publication never calls this function. Files are immutable;
 // an interrupted transaction may leave unreferenced files for a later audited cleanup.
 export async function extractMissingClips(tx: Prisma.TransactionClient, draft: Draft) {
-  if (!draft.readiness.canPublish || !draft.narration || !draft.alignment) throw new ReaderReleaseError(422, 'Text is not ready');
+  if (!draft.readiness.narrationValid || draft.readiness.alignmentStatus !== 'OK' || draft.readiness.selectedMissingTranslationCount || !draft.narration || !draft.alignment) throw new ReaderReleaseError(422, 'Text is not ready');
   if (!draft.missingClipOccurrenceIds.length) return;
   const narration = draft.narration;
   const stored = readAudioAssetRange(narration.asset.storageKey, 0, narration.asset.byteLength);
@@ -52,10 +53,7 @@ export async function publishLesson(prisma: PrismaClient, lessonId: string, acto
     const texts: ReaderText[] = [];
     for (const [index, draft] of drafts.entries()) {
       const textId = lesson.items[index].id;
-      try { await extractMissingClips(tx, draft); }
-      catch (error) { throw new ReaderReleaseError(422, 'Unable to prepare word clips', { code: 'LESSON_NOT_READY', texts: [{ textId, order: lesson.items[index].order,
-        readiness: draft.readiness, message: error instanceof Error ? error.message : 'Clip extraction failed' }] }); }
-      const current = await inspectReaderDraft(tx, textId);
+      const current = draft;
       if (!current.snapshot || !current.readiness.readyForPublication)
         throw new ReaderReleaseError(422, 'Text is not ready', { code: 'LESSON_NOT_READY', texts: [{ textId, order: lesson.items[index].order, readiness: current.readiness }] });
       const old = previousTexts.find(t => t.textId === textId);
