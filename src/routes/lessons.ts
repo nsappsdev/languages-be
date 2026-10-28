@@ -16,7 +16,7 @@ const updateSchema = metadata.partial().extend({ items: z.array(z.object({ id: z
 const itemSelect = { id: true, lessonId: true, order: true, textWorkspace: { select: { currentContentRevisionId: true } } } satisfies Prisma.LessonItemSelect;
 
 async function lessonDto(db: Prisma.TransactionClient, id: string) {
-  const lesson = await db.lesson.findUnique({ where: { id }, select: {
+  const lesson = await db.lesson.findFirst({ where: { id, archivedAt: null }, select: {
     id: true, title: true, description: true, currentPublicationId: true,
     items: { where: { archivedAt: null }, orderBy: { order: 'asc' }, select: itemSelect },
   } });
@@ -38,12 +38,29 @@ const run = (fn: (req: AuthenticatedRequest, res: Response) => Promise<unknown>)
 
 router.get('/lessons', authenticate, run(async (_req, res) => {
   const lessons = await prisma.$transaction(async tx => {
-    const ids = await tx.lesson.findMany({ orderBy: { updatedAt: 'desc' }, select: { id: true } });
+    const ids = await tx.lesson.findMany({ where: { archivedAt: null }, orderBy: { updatedAt: 'desc' }, select: { id: true } });
     return Promise.all(ids.map(l => lessonDto(tx, l.id)));
-  });
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   return res.json({ lessons });
 }));
 router.get('/lessons/:id', authenticate, run(async (req, res) => res.json({ lesson: await lessonDto(prisma, req.params.id) })));
+router.delete('/lessons/:id', authenticate, run(async (req, res) => {
+  await prisma.$transaction(async tx => {
+    await lockLesson(tx, req.params.id);
+    // Job creation and retries take the same lesson lock. A queued job may be
+    // claimed concurrently, but remains active until its work has completed.
+    const activeJob = await tx.audioJob.findFirst({ where: {
+      workspace: { item: { lessonId: req.params.id } }, status: { in: ['QUEUED', 'RUNNING'] },
+    }, select: { id: true } });
+    if (activeJob) throw new ReaderReleaseError(409, 'Audio is still being prepared for this lesson. Wait for it to finish, then delete the lesson.');
+    const archivedAt = new Date();
+    await tx.lessonPublication.updateMany({ where: { lessonId: req.params.id, revokedAt: null }, data: { revokedAt: archivedAt } });
+    await tx.textWorkspace.updateMany({ where: { item: { lessonId: req.params.id }, archivedAt: null }, data: { archivedAt } });
+    await tx.lessonItem.updateMany({ where: { lessonId: req.params.id, archivedAt: null }, data: { archivedAt } });
+    await tx.lesson.update({ where: { id: req.params.id }, data: { archivedAt, currentPublicationId: null, publishedAt: null } });
+  });
+  return res.status(204).end();
+}));
 router.post('/lessons', authenticate, run(async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ message: 'Provide a title and one or more texts', issues: parsed.error.flatten() });

@@ -36,10 +36,12 @@ services:
       AUDIO_WORKER_ENABLED: ${AUDIO_WORKER_ENABLED:-true}
       AUDIO_WORKER_POLL_INTERVAL_MS: ${AUDIO_WORKER_POLL_INTERVAL_MS:-2000}
       AUDIO_AUTHORING_STORAGE_ROOT: /app/var/audio-authoring
+      READER_FONT_STORAGE_ROOT: /app/var/reader-fonts
       SMTP_PASS: ${SMTP_PASS}
       SMTP_FROM: ${SMTP_FROM:-noreply@lezoo.app}
     volumes:
       - /opt/nsapp/data/audio-authoring:/app/var/audio-authoring
+      - /opt/nsapp/data/reader-fonts:/app/var/reader-fonts
     depends_on:
       postgres:
         condition: service_healthy

@@ -4,7 +4,7 @@ import { ReaderReleaseError } from './readerRelease';
 // Every authoring mutation takes the lesson lock first. Publication sees a
 // coherent draft, and concurrent duplicate clicks serialize across processes.
 export async function lockLesson(tx: Prisma.TransactionClient, lessonId: string) {
-  const rows = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "Lesson" WHERE id = ${lessonId} FOR UPDATE`;
+  const rows = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "Lesson" WHERE id = ${lessonId} AND "archivedAt" IS NULL FOR UPDATE`;
   if (!rows.length) throw new ReaderReleaseError(404, 'Lesson not found');
 }
 

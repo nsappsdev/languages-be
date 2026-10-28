@@ -29,7 +29,7 @@ function requireAdmin(req: AuthenticatedRequest, res: Response): boolean {
 }
 
 async function loadTextContext(lessonId: string, textId: string) {
-  const item = await prisma.lessonItem.findFirst({ where: { id: textId, lessonId, archivedAt: null }, select: { id: true, lessonId: true } });
+  const item = await prisma.lessonItem.findFirst({ where: { id: textId, lessonId, archivedAt: null, lesson: { archivedAt: null } }, select: { id: true, lessonId: true } });
   if (!item) return null;
   const workspace = await ensureWorkspace(prisma, textId);
   return { item, workspace };

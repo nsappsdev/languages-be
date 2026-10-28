@@ -214,4 +214,47 @@ describe('atomic lesson publication and unchanged mobile reader contract', () =>
     assert.equal(words.filter((w: any) => w.lessonId === other.lesson.id && w.status === 'LEARNING').length, 0);
     assert.equal((await api(path, 'POST', { clientUpdatedAt: '2099-01-01T00:00:00.000Z' }, learnerToken)).status, 400);
   });
+
+  it('deletes published lessons and pinned versions while preserving learner history and audio reused by another lesson', async () => {
+    const f = await fixture(2), other = await fixture();
+    const first = await f.publish(); await other.publish();
+    const publicationId = first.body.publicationId;
+    const manifest = (await api(`/learner/publications/${publicationId}`, 'GET', undefined, learnerToken)).body.manifest;
+    const text = manifest.texts[0], occurrence = text.occurrences.find((o: any) => o.learning);
+    const key = { publicationId, textReleaseId: text.textReleaseId, clientUpdatedAt: new Date().toISOString() };
+    await api('/learner/word-state', 'PUT', { ...key, occurrenceId: occurrence.id, status: 'LEARNED' }, learnerToken);
+    await api('/learner/reader-progress', 'PUT', { ...key, lastSample: 10, completed: false }, learnerToken);
+    // Reuse this lesson's clip through the normal library preference in another lesson.
+    const recording = await prisma.vocabularyRecording.findFirstOrThrow({ where: { assetId: occurrence.learning.clip.id }, include: { meaning: true } });
+    const preference = await prisma.vocabularyPreference.findUnique({ where: { meaningId_voiceId: { meaningId: recording.meaningId, voiceId: recording.voiceId } } });
+    assert.equal((await api(`/admin/vocabulary/meanings/${recording.meaningId}/preference`, 'PUT', {
+      voiceId: recording.voiceId, recordingId: recording.id, expectedRecordingId: preference?.recordingId ?? null,
+    })).status, 200);
+    await api(`/lessons/${f.lesson.id}`, 'PATCH', { title: 'A second publication' });
+    const second = await f.publish();
+    assert.notEqual(second.body.publicationId, publicationId);
+    const savedState = await prisma.readerWordState.findMany({ where: { publicationId } });
+    const savedProgress = await prisma.readerProgress.findMany({ where: { publicationId } });
+    assert.equal((await api(`/lessons/${f.lesson.id}`, 'DELETE')).status, 204);
+    assert.equal((await api('/learner/lessons', 'GET', undefined, learnerToken)).body.lessons.some((l: any) => l.id === f.lesson.id), false);
+    assert.equal((await api('/learner/words', 'GET', undefined, learnerToken)).body.words.some((w: any) => w.lessonId === f.lesson.id), false);
+    for (const id of [publicationId, second.body.publicationId]) {
+      assert.equal((await api(`/learner/publications/${id}`, 'GET', undefined, learnerToken)).status, 404);
+      assert.equal((await api(`/learner/publications/${id}/activate-vocabulary`, 'POST', { clientUpdatedAt: new Date().toISOString() }, learnerToken)).status, 404);
+      const url = `${server.baseUrl}/api/learner/audio-assets/${text.narration.id}/content?publicationId=${id}`;
+      assert.equal((await fetch(url, { headers: { authorization: `Bearer ${learnerToken}` } })).status, 404);
+    }
+    assert.equal((await api('/learner/word-state', 'PUT', { ...key, occurrenceId: occurrence.id, status: 'NEW' }, learnerToken)).status, 404);
+    assert.deepEqual(await prisma.readerWordState.findMany({ where: { publicationId } }), savedState);
+    assert.deepEqual(await prisma.readerProgress.findMany({ where: { publicationId } }), savedProgress);
+    assert.equal(await prisma.textRelease.count({ where: { textId: { in: f.texts.map(t => t.id) } } }), 2);
+    assert.equal(await prisma.lessonPublication.count({ where: { lessonId: f.lesson.id, revokedAt: { not: null } } }), 2);
+    assert.ok(await prisma.vocabularyRecording.findUnique({ where: { id: recording.id } }));
+    assert.equal((await api(`/admin/vocabulary/${recording.meaning.termId}`)).status, 200);
+    const words = (await api('/learner/words', 'GET', undefined, learnerToken)).body.words;
+    const reused = words.find((w: any) => w.lessonId === other.lesson.id && w.occurrence.learning.clip.id === recording.assetId);
+    assert.ok(reused, 'another lesson still uses the retained library recording');
+    const url = `${server.baseUrl}/api/learner/audio-assets/${recording.assetId}/content?publicationId=${reused.publicationId}`;
+    assert.equal((await fetch(url, { headers: { authorization: `Bearer ${learnerToken}` } })).status, 200);
+  });
 });

@@ -41,6 +41,7 @@ model Lesson {
   description                    String?
   status                         LessonStatus                      @default(DRAFT)
   publishedAt                    DateTime?
+  archivedAt                     DateTime?
   createdAt                      DateTime                          @default(now())
   updatedAt                      DateTime                          @updatedAt
   authorId                       String
@@ -205,8 +206,16 @@ model AppSettings {
   readingModes                Json     @default("[{\"id\":\"introduction\",\"enabled\":true,\"displayName\":\"Introduction\",\"order\":0},{\"id\":\"teaching\",\"enabled\":true,\"displayName\":\"Teaching\",\"order\":1,\"unknownWordRepetitions\":5},{\"id\":\"deep_learning\",\"enabled\":true,\"displayName\":\"Deep Learning\",\"order\":2,\"unknownWordRepetitions\":5,\"repeatSentenceWhenUnknownCountAtLeast\":2,\"sentenceRepetitions\":2}]")
   mainTextFontFamily          String   @default("System")
   mainTextFontSize            Int      @default(18)
+  mainTextFontId              String?
+  mainTextFont                ReaderFont? @relation("ReaderMainFont", fields: [mainTextFontId], references: [id], onDelete: Restrict)
+  mainTextLineHeight          Float    @default(1.333333)
   translationFontFamily       String   @default("System")
   translationFontSize         Int      @default(12)
+  translationFontId           String?
+  translationFont             ReaderFont? @relation("ReaderTranslationFont", fields: [translationFontId], references: [id], onDelete: Restrict)
+  translationLineHeight       Float    @default(1.266667)
+  translationGap              Float    @default(2)
+  readingRowGap               Float    @default(4)
   translationFontMinSize      Int      @default(8)
   translationFontMaxSize      Int      @default(15)
   translationLetterSpacingMin Float    @default(-0.2)
@@ -222,6 +231,25 @@ model AppSettings {
   updateMessage               String   @default("A newer app version is available.")
   createdAt                   DateTime @default(now())
   updatedAt                   DateTime @updatedAt
+}
+
+// Immutable font files; labels and availability can be managed independently.
+model ReaderFont {
+  id               String @id @default(cuid())
+  label            String
+  familyName       String
+  subfamilyName    String
+  postscriptName   String
+  format           String
+  sha256           String @unique
+  byteLength       Int
+  supportsEnglish  Boolean
+  supportsArmenian Boolean
+  archivedAt       DateTime?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  mainSettings     AppSettings[] @relation("ReaderMainFont")
+  translationSettings AppSettings[] @relation("ReaderTranslationFont")
 }
 
 // ---------------------------------------------------------------------------

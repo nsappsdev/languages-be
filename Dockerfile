@@ -25,7 +25,7 @@ COPY --from=builder --chown=node:node /app/node_modules ./node_modules
 COPY --from=builder --chown=node:node /app/package*.json ./
 COPY --from=builder --chown=node:node /app/dist ./dist
 COPY --from=builder --chown=node:node /app/prisma ./prisma
-RUN install -d -o node -g node -m 0750 /app/var/audio-authoring
+RUN install -d -o node -g node -m 0750 /app/var/audio-authoring /app/var/reader-fonts
 
 EXPOSE 3000
 USER node
