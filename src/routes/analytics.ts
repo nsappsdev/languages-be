@@ -6,11 +6,11 @@ const router = Router();
 
 router.get('/analytics/overview', authenticate, async (_req: AuthenticatedRequest, res) => {
   const [totalLessons, publishedLessons, totalItems, latestLesson] = await Promise.all([
-    prisma.lesson.count(),
-    prisma.lesson.count({ where: { currentPublicationId: { not: null } } }),
-    prisma.lessonItem.count({ where: { archivedAt: null } }),
+    prisma.lesson.count({ where: { archivedAt: null } }),
+    prisma.lesson.count({ where: { archivedAt: null, currentPublicationId: { not: null } } }),
+    prisma.lessonItem.count({ where: { archivedAt: null, lesson: { archivedAt: null } } }),
     prisma.lesson.findFirst({
-      where: { currentPublicationId: { not: null } },
+      where: { archivedAt: null, currentPublicationId: { not: null } },
       orderBy: { publishedAt: 'desc' },
       select: { title: true, publishedAt: true },
     }),

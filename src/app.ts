@@ -14,6 +14,7 @@ import { textAuthoringRouter } from './routes/textAuthoring';
 import { adminAudioAssetsRouter } from './routes/adminAudioAssets';
 import { readerRouter } from './routes/reader';
 import { vocabularyLibraryRouter } from './routes/vocabularyLibrary';
+import { readerFontsRouter } from './routes/readerFonts';
 
 export function createApp() {
   const app = express();
@@ -42,6 +43,7 @@ export function createApp() {
   app.use('/api', adminAudioAssetsRouter);
   app.use('/api', readerRouter);
   app.use('/api', vocabularyLibraryRouter);
+  app.use('/api', readerFontsRouter);
 
   return app;
 }

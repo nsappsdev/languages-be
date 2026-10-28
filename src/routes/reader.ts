@@ -42,14 +42,14 @@ router.post('/admin/lessons/:lessonId/unpublish', authenticate, run(async (req, 
 }));
 
 async function getPublication(id: string) {
-  const publication = await prisma.lessonPublication.findFirst({ where: { id, revokedAt: null }, include: { lesson: { select: { currentPublicationId: true } } } });
+  const publication = await prisma.lessonPublication.findFirst({ where: { id, revokedAt: null, lesson: { archivedAt: null } }, include: { lesson: { select: { currentPublicationId: true } } } });
   // Previous immutable versions remain accessible to pinned sessions until the lesson is withdrawn.
   if (!publication || !publication.lesson.currentPublicationId) throw new ReaderReleaseError(404, 'Published lesson unavailable');
   return { publication, manifest: publication.manifest as unknown as ReaderManifest };
 }
 
 async function currentPublications() {
-  const lessons = await prisma.lesson.findMany({ where: { currentPublicationId: { not: null } }, orderBy: { createdAt: 'asc' } });
+  const lessons = await prisma.lesson.findMany({ where: { archivedAt: null, currentPublicationId: { not: null } }, orderBy: { createdAt: 'asc' } });
   const publications = await prisma.lessonPublication.findMany({ where: { id: { in: lessons.map(l => l.currentPublicationId!) }, revokedAt: null } });
   return lessons.flatMap(lesson => {
     const publication = publications.find(p => p.id === lesson.currentPublicationId && p.lessonId === lesson.id);
@@ -80,7 +80,7 @@ async function manifestResponse(req: AuthenticatedRequest, res: Response, id: st
 }
 
 router.get('/learner/lessons/:lessonId/manifest', authenticate, run(async (req, res) => {
-  const lesson = await prisma.lesson.findUnique({ where: { id: req.params.lessonId } });
+  const lesson = await prisma.lesson.findFirst({ where: { id: req.params.lessonId, archivedAt: null } });
   if (!lesson?.currentPublicationId) throw new ReaderReleaseError(404, 'This lesson has no published text version');
   return manifestResponse(req, res, lesson.currentPublicationId);
 }));

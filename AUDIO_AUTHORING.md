@@ -71,7 +71,7 @@ npm test
 npx prisma migrate deploy
 npx prisma migrate status
 # Against only the disposable integration database:
-ELEVENLABS_API_KEY=synthetic-test-only ELEVENLABS_DEFAULT_VOICE_ID=synthetic-test-only AUDIO_WORKER_ENABLED=false node --test dist/integration/__tests__/*.test.js
+ELEVENLABS_API_KEY=synthetic-test-only ELEVENLABS_DEFAULT_VOICE_ID=synthetic-test-only AUDIO_WORKER_ENABLED=false node --test --test-concurrency=1 dist/integration/__tests__/*.test.js
 ```
 
 Tests use an explicitly synthetic ElevenLabs fetch mock which rejects all non-loopback network requests other than intercepted provider calls. Real provider calls are zero. Keep real keys out of test environments. Admin checks: `npm test`, `npm run lint`, `npm run build`, `npx tsc --noEmit`. Mobile checks: `npm test`, `npm run lint`, `npx tsc --noEmit`.

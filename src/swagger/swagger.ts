@@ -391,6 +391,20 @@ const definition = {
       }
     },
     '/lessons/{id}': {
+      delete: {
+        tags: [ 'Lessons' ],
+        summary: 'Delete a lesson (admin only)',
+        description: 'Archives the lesson and its texts and revokes all publications. Shared vocabulary audio and learner history are retained. Queued or running audio must finish first.',
+        security: [ { bearerAuth: [] } ],
+        parameters: [ { name: 'id', in: 'path', required: true, schema: { type: 'string' } } ],
+        responses: {
+          '204': { description: 'Lesson deleted' },
+          '401': { description: 'Authentication required' },
+          '403': { description: 'Admin access required' },
+          '404': { description: 'Lesson missing or already deleted' },
+          '409': { description: 'Audio is still queued or generating' },
+        },
+      },
       get: {
         tags: [ 'Lessons' ],
         summary: 'Get lesson by ID',

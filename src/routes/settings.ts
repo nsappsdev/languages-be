@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate, AuthenticatedRequest } from '../middleware/authenticate';
 import { prisma } from '../lib/prisma';
+import { fontBytes, lockSettings, settingsDto } from '../lib/readerFonts';
+import { ReaderReleaseError } from '../lib/readerRelease';
 
 const router = Router();
 
@@ -100,12 +102,19 @@ const readingModeSchema = z
     }
   });
 
-const updateSettingsSchema = z.object({
+const settingsFieldsSchema = z.object({
   readingModes: z.array(readingModeSchema).length(3).optional(),
   mainTextFontFamily: z.enum(MAIN_FONT_OPTIONS).optional(),
   mainTextFontSize: z.number().int().min(12).max(32).optional(),
+  mainTextFontId: z.string().min(1).nullable().optional(),
+  mainTextLineHeight: z.number().min(1).max(2.5).optional(),
   translationFontFamily: z.enum(TRANSLATION_FONT_OPTIONS).optional(),
-  translationFontSize: z.number().int().min(10).max(24).optional(),
+  translationFontSize: z.number().int().min(6).max(24).optional(),
+  translationFontId: z.string().min(1).nullable().optional(),
+  translationLineHeight: z.number().min(1).max(2.5).optional(),
+  translationGap: z.number().min(0).max(32).optional(),
+  readingRowGap: z.number().min(0).max(48).optional(),
+  expectedUpdatedAt: z.string().datetime().optional(),
   translationFontMinSize: z.number().int().min(6).max(20).optional(),
   translationFontMaxSize: z.number().int().min(6).max(24).optional(),
   translationLetterSpacingMin: z.number().min(-2).max(4).optional(),
@@ -119,7 +128,8 @@ const updateSettingsSchema = z.object({
   androidStoreUrl: z.string().trim().url().or(z.literal('')).optional(),
   iosStoreUrl: z.string().trim().url().or(z.literal('')).optional(),
   updateMessage: z.string().trim().min(1).max(240).optional(),
-}).superRefine((settings, ctx) => {
+});
+const updateSettingsSchema = settingsFieldsSchema.superRefine((settings, ctx) => {
   if (
     settings.translationFontMinSize !== undefined &&
     settings.translationFontMaxSize !== undefined &&
@@ -185,7 +195,8 @@ router.get('/settings', authenticate, async (req: AuthenticatedRequest, res) => 
       create: { id: SETTINGS_ID, readingModes: DEFAULT_READING_MODES },
       update: {},
     });
-    res.json({ settings });
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.json({ settings: await settingsDto(prisma, settings) });
   } catch {
     res.status(500).json({ message: 'Failed to load settings' });
   }
@@ -204,13 +215,31 @@ router.patch('/settings', authenticate, async (req: AuthenticatedRequest, res) =
   }
 
   try {
-    const settings = await prisma.appSettings.upsert({
-      where: { id: SETTINGS_ID },
-      create: { id: SETTINGS_ID, readingModes: DEFAULT_READING_MODES, ...parsed.data },
-      update: parsed.data,
+    const settings = await prisma.$transaction(async tx => {
+      const current = await lockSettings(tx);
+      const { expectedUpdatedAt, ...changes } = parsed.data;
+      if (expectedUpdatedAt && current.updatedAt.toISOString() !== expectedUpdatedAt)
+        throw new ReaderReleaseError(409, 'Settings changed in another session. Reload the settings before saving.');
+      // Validate the merged settings so one-field PATCHes cannot bypass bounds.
+      const merged = updateSettingsSchema.safeParse({ ...Object.fromEntries(Object.keys(current).filter(key => key in settingsFieldsSchema.shape).map(key => [key, current[key as keyof typeof current]])), ...changes });
+      if (!merged.success) throw new ReaderReleaseError(400, merged.error.issues[0]?.message ?? 'Invalid settings');
+      for (const [field, capability] of [['mainTextFontId', 'supportsEnglish'], ['translationFontId', 'supportsArmenian']] as const) {
+        const id = changes[field] === undefined ? current[field] : changes[field];
+        if (!id) continue;
+        const font = await tx.readerFont.findUnique({ where: { id } });
+        if (!font || font.archivedAt || !fontBytes(font) || !font[capability])
+          throw new ReaderReleaseError(400, `Choose an available font with ${capability === 'supportsEnglish' ? 'English' : 'Armenian'} letters.`);
+      }
+      // Older mobile builds keep their built-in fallback instead of receiving
+      // an unregistered native family name for a new uploaded font.
+      if (changes.mainTextFontId) changes.mainTextFontFamily = 'System';
+      if (changes.translationFontId) changes.translationFontFamily = 'System';
+      const saved = await tx.appSettings.update({ where: { id: SETTINGS_ID }, data: changes });
+      return settingsDto(tx, saved);
     });
     res.json({ settings });
-  } catch {
+  } catch (error) {
+    if (error instanceof ReaderReleaseError) { res.status(error.status).json({ message: error.message }); return; }
     res.status(500).json({ message: 'Failed to update settings' });
   }
 });
