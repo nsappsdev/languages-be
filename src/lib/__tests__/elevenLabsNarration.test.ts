@@ -47,7 +47,7 @@ describe('elevenLabsNarration adapter', () => {
     };
 
     const result = await generateNarration(
-      { text: 'Hello world', voiceId: 'voice-1' },
+      { text: 'Hello world', voiceId: 'voice-1', previousText: 'Before.', nextText: 'After.' },
       { apiKey: 'test-key', fetchImpl },
     );
 
@@ -58,6 +58,8 @@ describe('elevenLabsNarration adapter', () => {
     const body = JSON.parse(String(capturedInit?.body));
     assert.equal(body.text, 'Hello world');
     assert.equal(body.model_id, 'eleven_multilingual_v2');
+    assert.equal(body.previous_text, 'Before.');
+    assert.equal(body.next_text, 'After.');
     assert.equal(result.alignment?.characters.length, 1);
     assert.equal(result.audio.frameCount, 4);
   });

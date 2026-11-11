@@ -1,8 +1,18 @@
 # Text authoring and publication
 
-One ordered `LessonItem` is one text. `TextContentRevision` is authoritative. The admin creates a lesson with one or more pasted texts, explicitly saves and generates ElevenLabs narration, selects aligned word occurrences, adds contextual Armenian translations, prepares vocabulary audio, and clicks **Publish** (or **Update published lesson**). Vocabulary preparation reuses saved audio and generates missing words separately. Repeated words have independent occurrence identities and translations, with shared recordings. Texts may be added, reordered, or removed; removal archives the item. See **Standalone vocabulary audio (2026-10-18)** below for the current generation and rollout contract; dated verification sections describe earlier behavior.
+One ordered `LessonItem` is one text. `TextContentRevision` is authoritative. The admin creates a lesson with one or more pasted texts, saves the source, reviews sentence breaks and explicitly prepares separate ElevenLabs sentence recordings. Full narration is assembled from those recordings. The admin selects aligned word occurrences, adds contextual Armenian translations, prepares vocabulary audio, and clicks **Publish** (or **Update published lesson**). Vocabulary preparation reuses saved audio and generates missing words separately. Repeated words have independent occurrence identities and translations, with shared recordings. Texts may be added, reordered, or removed; removal archives the item. See **Sentence audio (2026-11-11)** and **Standalone vocabulary audio (2026-10-18)** for the current generation and rollout contract; older dated verification sections describe earlier behavior.
 
 There is no visible approval stage. `TextRelease` and `LessonPublication` remain immutable internally so existing mobile sessions are isolated from edits. Unchanged texts reuse their release identity on a lesson update, preserving their learner state. Unpublish withdraws all versions of a lesson. Lesson visibility is derived exclusively from `currentPublicationId`.
+
+## Sentence audio (2026-11-11)
+
+Apply migration `20261110100000_sentence_audio` and regenerate Prisma Client before starting the updated API/worker. New narration jobs generate each reviewed sentence separately, persist each result, and assemble the canonical narration from exact PCM samples. Real character timings are rebased onto that timeline; missing/invalid alignment still requires review.
+
+`SentenceAudio` reuses matching requests within a text, including voice, neighboring text and synthesis settings in the identity. A single sentence can be explicitly regenerated. Completed recordings survive a later failure; uncertain provider outcomes require review before explicit regeneration. Existing queued full-narration jobs remain supported.
+
+Same-content-revision regeneration carries forward matching vocabulary selections, translations and recording associations. Sentence boundaries cannot split selected phrases. Published texts keep schema version 2 and add optional `narrationSource: "SENTENCES"` plus full recorded sentence bounds for compatible mobile replay. Existing published releases and assets are retained.
+
+See [the session record](docs/session-2026-11-11.md) for validation and companion-client behavior.
 
 ## Configuration
 
@@ -23,9 +33,9 @@ All paths below are under `/api`. Authoring endpoints require an admin bearer to
 - `POST /lessons`: `{ title, description?, items: [{ text }, ...] }`. Creates lesson, stable item identities, workspaces and initial revisions in one transaction. Array order is text order. No audio job is created.
 - `PATCH /lessons/:id`: `{ title?, description?, items?: [{ id }, ...] }`. An optional list reorders retained active items and archives omitted ones. It does not edit text. Unknown, foreign or duplicate IDs are rejected. At least one item must remain.
 - `POST /lessons/:lessonId/items`: `{ text }`. Appends a persisted item and revision in one transaction.
-- `GET /admin/lessons/:lessonId/texts/:textId`: saved revision, current narration/alignment and active narration job.
+- `GET /admin/lessons/:lessonId/texts/:textId`: saved revision, current narration/alignment, sentence recordings, reviewed/default sentence boundaries and active/latest narration jobs.
 - `POST .../texts/:textId/content-revisions`: `{ text, sourceLanguage?: "en" }`. Byte-identical saves are no-ops. Changes invalidate current narration/alignment and selections/clips through lineage; historical rows are retained.
-- `POST .../texts/:textId/narration-jobs`: `{ contentRevisionId, voiceProfileId? }` with `Idempotency-Key`. Explicitly queues full narration, immediately invalidating the old draft narration and selections. Same key/payload returns the same job. One active narration job per text.
+- `POST .../texts/:textId/narration-jobs`: `{ contentRevisionId, voiceProfileId?, sentenceEndOffsets?, regenerateSentenceIndex?, expectedDraftVersion? }` with `Idempotency-Key`. Explicitly queues sentence generation and assembled narration, invalidating the current draft audio until completion. Reviewed offsets refer to the full saved source; the regeneration index is zero-based. Same key/payload returns the same job. One active narration job per text. Same-revision vocabulary associations are restored against the new successful alignment.
 - `GET /admin/audio-jobs/:jobId`: durable narration progress/error.
 - `GET .../texts/:textId/occurrences`: current aligned sentences and occurrences, translations and verified current clips.
 - `PATCH .../texts/:textId/selection`: `{ alignmentId, changes: [{ occurrenceId, selected }] }`.

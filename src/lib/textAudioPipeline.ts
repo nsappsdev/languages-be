@@ -8,6 +8,7 @@ import { config } from '../config';
 import { lockText } from './authoringTransaction';
 import { inspectReaderDraft } from './readerRelease';
 import { extractMissingClips } from './lessonPublication';
+import { generateSentenceNarration, SentenceRecording } from './sentenceNarration';
 
 /**
  * Executes one claimed AudioJob to completion (success or terminal failure).
@@ -17,6 +18,9 @@ import { extractMissingClips } from './lessonPublication';
 export interface GenerateNarrationPayload {
   contentRevisionId: string;
   voiceId: string;
+  generationMode?: 'sentences';
+  sentenceEndOffsets?: number[];
+  regenerateSentenceIndex?: number;
 }
 
 export interface ExtractClipsPayload {
@@ -35,8 +39,13 @@ export async function runGenerateNarrationJob(prisma: PrismaClient, job: AudioJo
   }
 
   let result;
+  let sentenceRecordings: SentenceRecording[] | undefined;
   try {
-    result = await generateNarration(
+    if (payload.generationMode === 'sentences') {
+      const generated = await generateSentenceNarration(prisma, job, contentRevision.text, contentRevision.sourceLanguage, payload);
+      result = generated;
+      sentenceRecordings = generated.sentences;
+    } else result = await generateNarration(
       { text: contentRevision.text, voiceId: payload.voiceId },
       { apiKey: config.elevenLabs.apiKey },
     );
@@ -58,6 +67,9 @@ export async function runGenerateNarrationJob(prisma: PrismaClient, job: AudioJo
 
   await prisma.$transaction(async (tx) => {
     await lockText(tx, job.textId);
+    await tx.$queryRaw`SELECT id FROM "AudioJob" WHERE id = ${job.id} FOR UPDATE`;
+    const activeJob = await tx.audioJob.findUniqueOrThrow({ where: { id: job.id } });
+    if (activeJob.status !== 'RUNNING') throw new Error('Audio job is no longer active.');
     const asset = await tx.audioAsset.create({
       data: {
         textId: job.textId,
@@ -83,7 +95,7 @@ export async function runGenerateNarrationJob(prisma: PrismaClient, job: AudioJo
         provider: 'elevenlabs',
         model: 'eleven_multilingual_v2',
         voiceId: payload.voiceId,
-        requestSettings: { outputFormat: 'wav_24000' },
+        requestSettings: { outputFormat: 'wav_24000', ...(sentenceRecordings ? { generationMode: 'sentences', sentences: sentenceRecordings } : {}) } as any,
         inputTextSha256: contentRevision.textSha256,
         rawAlignment: (result.alignment ?? null) as any,
       },
@@ -94,11 +106,13 @@ export async function runGenerateNarrationJob(prisma: PrismaClient, job: AudioJo
       alignment: result.alignment as ElevenLabsCharacterAlignment | null,
       algorithmVersion: 1,
       sampleRate: result.audio.sampleRate,
+      sentenceSpans: sentenceRecordings,
     });
 
     const sentencesWithIds = mapping.sentences.map((sentence, index) => ({
       id: `sentence-${index}`,
       ...sentence,
+      ...(sentenceRecordings ? { startSample: sentenceRecordings[index].startSample, endSample: sentenceRecordings[index].endSample } : {}),
     }));
 
     const alignment = await tx.textAlignment.create({
@@ -130,6 +144,30 @@ export async function runGenerateNarrationJob(prisma: PrismaClient, job: AudioJo
       });
     }
 
+    // Same source revision keeps its learning selections when only audio changes.
+    if (sentenceRecordings && mapping.status === 'OK') {
+      const previousAlignment = await tx.textAlignment.findFirst({ where: {
+        textId: job.textId, contentRevisionId: contentRevision.id, id: { not: alignment.id }, status: 'OK',
+      }, orderBy: { createdAt: 'desc' }, include: { occurrences: true, entries: { where: { archivedAt: null }, include: { translations: true } } } });
+      if (previousAlignment) {
+        const words = await tx.wordOccurrence.findMany({ where: { alignmentId: alignment.id } });
+        for (const entry of previousAlignment.entries) {
+          const oldFirst = previousAlignment.occurrences.find(word => word.id === entry.occurrenceId);
+          const oldLast = previousAlignment.occurrences.find(word => word.id === (entry.endOccurrenceId ?? entry.occurrenceId));
+          const first = words.find(word => word.charStart === oldFirst?.charStart);
+          const last = words.find(word => word.charEnd === oldLast?.charEnd);
+          if (!first || !last || first.sentenceId !== last.sentenceId) continue;
+          await tx.textVocabularyEntry.create({ data: {
+            textId: job.textId, alignmentId: alignment.id, occurrenceId: first.id,
+            endOccurrenceId: first.id === last.id ? null : last.id, selected: entry.selected, recordingId: entry.recordingId,
+            translations: { create: entry.translations.map(translation => ({
+              languageCode: translation.languageCode, translation: translation.translation, usageExample: translation.usageExample,
+            })) },
+          } });
+        }
+      }
+    }
+
     // A completed job belongs to its saved revision, even if the admin has edited meanwhile.
     await tx.textWorkspace.updateMany({
       where: { textId: job.textId, currentContentRevisionId: contentRevision.id },
@@ -137,7 +175,7 @@ export async function runGenerateNarrationJob(prisma: PrismaClient, job: AudioJo
     });
 
     await completeJob(tx, job.id, { resultAssetId: asset.id, resultId: alignment.id });
-  });
+  }, { timeout: 60000 });
 }
 
 // Kept for already queued local extraction jobs during rollout. New vocabulary

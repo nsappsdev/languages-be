@@ -15,7 +15,7 @@ function resolveRoot(): string {
   return path.resolve(configured ?? path.join(process.cwd(), 'var', 'audio-authoring'));
 }
 
-export type AudioAssetKindForStorage = 'NARRATION' | 'WORD_CLIP' | 'LEGACY_REFERENCE';
+export type AudioAssetKindForStorage = 'NARRATION' | 'SENTENCE' | 'WORD_CLIP' | 'LEGACY_REFERENCE';
 
 export interface WriteAudioAssetInput {
   textId: string;

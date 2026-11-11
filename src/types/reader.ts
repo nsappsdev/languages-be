@@ -35,6 +35,7 @@ export interface ReaderText {
   text: string;
   sourceLanguage: string;
   narration: ReaderAsset;
+  narrationSource?: 'SENTENCES';
   sentences: { id: string; text: string; charStart: number; charEnd: number; startSample: number; endSample: number }[];
   occurrences: ReaderOccurrence[];
 }
