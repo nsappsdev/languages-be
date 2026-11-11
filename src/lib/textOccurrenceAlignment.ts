@@ -1,4 +1,5 @@
 import { secondsToSampleIndex } from './pcmWav';
+import type { SentenceSpan } from './sentenceSegmentation';
 
 /**
  * Our deterministic mapping from ElevenLabs character-level alignment to
@@ -58,6 +59,7 @@ export interface BuildTextAlignmentInput {
   alignment: ElevenLabsCharacterAlignment | null;
   algorithmVersion: number;
   sampleRate?: number;
+  sentenceSpans?: SentenceSpan[];
 }
 
 // v1 English word tokenization policy: letters/digits with internal straight
@@ -168,7 +170,10 @@ export function buildTextAlignment(input: BuildTextAlignmentInput): TextAlignmen
     };
   }
 
-  const sentenceSpans = segmentSentences(text);
+  const sentenceSpans = input.sentenceSpans ?? segmentSentences(text);
+  // Provider entries may contain a Unicode code point or a multi-character token.
+  const characterStarts = characters.flatMap((character, index) => Array(character.length).fill(starts[index]) as number[]);
+  const characterEnds = characters.flatMap((character, index) => Array(character.length).fill(ends[index]) as number[]);
   const occurrences: WordOccurrenceResult[] = [];
   let ordinal = 0;
   for (const match of text.matchAll(WORD_TOKEN_REGEX)) {
@@ -178,8 +183,8 @@ export function buildTextAlignment(input: BuildTextAlignmentInput): TextAlignmen
     const sentenceIndex = sentenceSpans.findIndex(
       (s) => charStart >= s.charStart && charEnd <= s.charEnd,
     );
-    const speechStartSample = secondsToSampleIndex(starts[charStart], sampleRate);
-    const speechEndSample = secondsToSampleIndex(ends[charEnd - 1], sampleRate);
+    const speechStartSample = secondsToSampleIndex(characterStarts[charStart], sampleRate);
+    const speechEndSample = secondsToSampleIndex(characterEnds[charEnd - 1], sampleRate);
 
     occurrences.push({
       ordinal,

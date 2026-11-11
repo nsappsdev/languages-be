@@ -154,6 +154,9 @@ describe('atomic lesson publication and unchanged mobile reader contract', () =>
     assert.equal((await f.publish()).status, 422);
     assert.equal((await api(`/learner/publications/${first.body.publicationId}`, 'GET', undefined, learnerToken)).status, 200);
     await runGenerateNarrationJob(prisma, await prisma.audioJob.update({ where: { id: queued.body.job.id }, data: { status: 'RUNNING' } }));
+    // Sentence regeneration now retains selections. This historical fixture
+    // needs fresh legacy clips at the new narration boundaries before publishing.
+    await prepareLegacyClips(prisma, t.id);
     const second = await f.publish(); assert.equal(second.status, 201);
     assert.notEqual(second.body.publicationId, first.body.publicationId);
   });

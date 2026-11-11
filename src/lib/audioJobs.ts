@@ -118,7 +118,8 @@ const LEASE_MS = 2 * 60 * 1000;
 export async function failExpiredVocabularyJobs(prisma: PrismaClient) {
   await prisma.$transaction(async tx => {
     const expired = await tx.$queryRaw<{ id: string }[]>`SELECT id FROM "AudioJob"
-      WHERE kind = 'GENERATE_VOCABULARY' AND status = 'RUNNING' AND "leaseUntil" < NOW()
+      WHERE (kind = 'GENERATE_VOCABULARY' OR (kind = 'GENERATE_NARRATION' AND "requestPayload"->>'generationMode' = 'sentences'))
+      AND status = 'RUNNING' AND "leaseUntil" < NOW()
       LIMIT 50 FOR UPDATE SKIP LOCKED`;
     const ids = expired.map(job => job.id);
     if (!ids.length) return;
@@ -126,6 +127,8 @@ export async function failExpiredVocabularyJobs(prisma: PrismaClient) {
       errorCode: 'PROVIDER_UNKNOWN_OUTCOME', errorMessage: 'Audio preparation was interrupted. Completed recordings are saved; review pending provider outcomes before trying again.', retryable: false } });
     await tx.vocabularyAudio.updateMany({ where: { ownerJobId: { in: ids }, status: 'RUNNING' },
       data: { status: 'FAILED', errorCode: 'PROVIDER_UNKNOWN_OUTCOME', retryable: false } });
+    await tx.sentenceAudio.updateMany({ where: { ownerJobId: { in: ids }, status: 'RUNNING' },
+      data: { status: 'FAILED', retryable: false } });
   });
 }
 

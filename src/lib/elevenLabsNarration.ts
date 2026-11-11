@@ -30,6 +30,8 @@ export interface NarrationCharacterAlignment {
 export interface GenerateNarrationRequest {
   text: string;
   voiceId: string;
+  previousText?: string;
+  nextText?: string;
   voiceSettings?: {
     stability?: number;
     similarityBoost?: number;
@@ -110,6 +112,8 @@ export async function generateNarration(
 
   const body = {
     text: request.text,
+    ...(request.previousText ? { previous_text: request.previousText } : {}),
+    ...(request.nextText ? { next_text: request.nextText } : {}),
     model_id: ELEVEN_LABS_MODEL,
     apply_text_normalization: 'auto',
     voice_settings: {

@@ -276,6 +276,7 @@ model TextWorkspace {
   jobs             AudioJob[]
   releases         TextRelease[]
   wordClips        WordClip[]
+  sentenceAudio    SentenceAudio[]
 }
 
 model TextContentRevision {
@@ -297,6 +298,7 @@ model TextContentRevision {
 
 enum AudioAssetKind {
   NARRATION
+  SENTENCE
   WORD_CLIP
   LEGACY_REFERENCE
 }
@@ -328,8 +330,26 @@ model AudioAsset {
   wordClips   WordClip[]
   libraryRecordings VocabularyRecording[]
   vocabularyAudio VocabularyAudio[]
+  sentenceAudio SentenceAudio[]
 
   @@index([textId, kind])
+}
+
+model SentenceAudio {
+  id           String        @id @default(cuid())
+  textId       String
+  workspace    TextWorkspace @relation(fields: [textId], references: [textId], onDelete: Cascade)
+  requestHash  String
+  ownerJobId   String
+  status       AudioJobStatus @default(RUNNING)
+  assetId      String?
+  asset        AudioAsset?   @relation(fields: [assetId], references: [id])
+  rawAlignment Json          @default("null")
+  retryable    Boolean       @default(false)
+  updatedAt    DateTime      @updatedAt
+
+  @@unique([textId, requestHash])
+  @@index([ownerJobId, status])
 }
 
 model TextNarration {

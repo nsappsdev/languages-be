@@ -95,14 +95,16 @@ export async function inspectReaderDraft(db: Db, textId: string) {
   if (readiness.readyForPublication && revision && narration && alignment) {
     const selected = new Map(entries.filter(e => e.selected).map(e => [e.occurrenceId, e]));
     const phraseMembers = new Set(entries.filter(entry => entry.selected).flatMap(entry => ranges.get(entry.occurrenceId)?.members.slice(1).map(word => word.id) ?? []));
-    const sentences = alignment.sentences as unknown as { id: string; text: string; charStart: number; charEnd: number }[];
+    const sentences = alignment.sentences as unknown as { id: string; text: string; charStart: number; charEnd: number; startSample?: number; endSample?: number }[];
     snapshot = {
       textId, textReleaseId: '', contentRevisionId: revision.id, narrationId: narration.id, alignmentId: alignment.id,
       text: revision.text, sourceLanguage: revision.sourceLanguage, narration: assetDto(narration.asset),
+      ...((narration.requestSettings as { generationMode?: string }).generationMode === 'sentences'
+        ? { narrationSource: 'SENTENCES' as const } : {}),
       sentences: sentences.map(sentence => {
         const words = alignment.occurrences.filter(o => o.sentenceId === sentence.id);
-        return { ...sentence, startSample: words[0]?.speechStartSample ?? 0,
-          endSample: words[words.length - 1]?.speechEndSample ?? 0 };
+        return { ...sentence, startSample: sentence.startSample ?? words[0]?.speechStartSample ?? 0,
+          endSample: sentence.endSample ?? words[words.length - 1]?.speechEndSample ?? 0 };
       }),
       occurrences: alignment.occurrences.filter(o => !phraseMembers.has(o.id)).map(o => {
         const entry = selected.get(o.id);
