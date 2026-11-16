@@ -1,7 +1,8 @@
 import { AudioJob, Prisma, PrismaClient } from '@prisma/client';
 import { lockText } from './authoringTransaction';
 import { completeJob, createOrReplayJob, failJob } from './audioJobs';
-import { ReaderReleaseError, validReaderAsset } from './readerRelease';
+import { inspectReaderDraft, ReaderReleaseError, validReaderAsset } from './readerRelease';
+import { extractMissingClips } from './lessonPublication';
 import { normalizeVocabulary } from './vocabularyLibrary';
 import { resolveVocabularyRange } from './vocabularyRanges';
 import { ELEVEN_LABS_MODEL, generateNarration, ProviderError } from './elevenLabsNarration';
@@ -11,7 +12,7 @@ import { config } from '../config';
 
 type Db = Prisma.TransactionClient | PrismaClient;
 type PlanEntry = { entryId: string; text: string; translation: string; language: string; recordingId: string | null; assetId: string | null };
-export interface VocabularyAudioPayload { alignmentId: string; draftVersion: number; voiceId: string; entries: PlanEntry[] }
+export interface VocabularyAudioPayload { alignmentId: string; draftVersion: number; voiceId: string; entries: PlanEntry[]; source?: 'sentences' }
 
 export async function vocabularyAudioPlan(db: Db, textId: string) {
   const workspace = await db.textWorkspace.findUniqueOrThrow({ where: { textId } });
@@ -21,8 +22,28 @@ export async function vocabularyAudioPlan(db: Db, textId: string) {
     db.textContentRevision.findUnique({ where: { id: workspace.currentContentRevisionId ?? '' } }),
     db.textVocabularyEntry.findMany({ where: { textId, alignmentId: workspace.currentAlignmentId ?? '', archivedAt: null, selected: true }, include: { translations: true } }),
   ]);
-  if (!alignment || alignment.status !== 'OK' || !narration || !revision || narration.contentRevisionId !== revision.id || alignment.narrationId !== narration.id)
-    throw new ReaderReleaseError(422, 'Generate and align the current narration before preparing word audio.');
+  if (!alignment || !revision || alignment.contentRevisionId !== revision.id)
+    throw new ReaderReleaseError(422, 'Save the text before preparing word audio.');
+  // New texts prepare each occurrence from its own sentence, never from a
+  // same-spelling library recording that may have a different delivery.
+  if (!narration || (narration.requestSettings as { generationMode?: string }).generationMode === 'sentence-assets') {
+    const draft = await inspectReaderDraft(db, textId);
+    const result = entries.map(entry => {
+      const translation = entry.translations.find(t => ['hy', 'am'].includes(t.languageCode))?.translation.trim() ?? '';
+      const range = resolveVocabularyRange(alignment.occurrences, entry);
+      return { entryId: entry.id, text: revision.text.slice(range.first.charStart, range.last.charEnd), translation,
+        language: revision.sourceLanguage.trim().toLowerCase(), recordingId: null, assetId: draft.clips.get(entry.id)?.asset.id ?? null };
+    });
+    const blockedReason = !draft.readiness.narrationValid ? 'Generate all sentence recordings before preparing word audio.'
+      : draft.readiness.alignmentStatus !== 'OK' ? 'Resolve sentence timing before preparing word audio.'
+      : draft.readiness.selectedMissingTranslationCount ? 'Add Armenian translations for all selected words and phrases first.' : null;
+    return { source: 'sentences' as const, alignmentId: alignment.id, draftVersion: workspace.draftVersion,
+      voiceId: narration?.voiceId ?? '', entries: result, reuseCount: result.filter(e => e.assetId).length,
+      generateCount: 0, extractCount: result.filter(e => !e.assetId).length, audioGenerationConfigured: false,
+      canPrepare: !blockedReason, blockedReason };
+  }
+  const voiceId = narration?.voiceId ?? config.elevenLabs.defaultVoiceId;
+  if (!voiceId) throw new ReaderReleaseError(503, 'Choose a configured voice before preparing word audio.');
   const language = revision.sourceLanguage.trim().toLowerCase();
   const result: PlanEntry[] = [];
   for (const entry of entries) {
@@ -31,18 +52,18 @@ export async function vocabularyAudioPlan(db: Db, textId: string) {
     const range = resolveVocabularyRange(alignment.occurrences, entry);
     const text = revision.text.slice(range.first.charStart, range.last.charEnd);
     const term = await db.vocabularyTerm.findUnique({ where: { language_normalizedText: { language, normalizedText: normalizeVocabulary(text) } }, include: {
-      meanings: { include: { preferences: true, recordings: { where: { voiceId: narration.voiceId, model: ELEVEN_LABS_MODEL }, orderBy: [{ standalone: 'desc' }, { createdAt: 'asc' }], include: { asset: true } } } },
+      meanings: { include: { preferences: true, recordings: { where: { voiceId: voiceId, model: ELEVEN_LABS_MODEL }, orderBy: [{ standalone: 'desc' }, { createdAt: 'asc' }], include: { asset: true } } } },
     } });
     const sameMeaning = term?.meanings.find(m => m.normalizedTranslation === normalizeVocabulary(translation));
-    const preferredId = sameMeaning?.preferences.find(p => p.voiceId === narration.voiceId)?.recordingId;
+    const preferredId = sameMeaning?.preferences.find(p => p.voiceId === voiceId)?.recordingId;
     const candidates = [...(sameMeaning?.recordings ?? []), ...(term?.meanings.flatMap(m => m.recordings) ?? [])];
     const recording = [candidates.find(r => r.id === preferredId), ...candidates].find(r => r && validReaderAsset(r.asset));
     result.push({ entryId: entry.id, text, translation, language, recordingId: recording?.id ?? null, assetId: recording?.assetId ?? null });
   }
   const missing = [...new Set(result.filter(e => !e.recordingId).map(e => normalizeVocabulary(e.text)))];
-  return { alignmentId: alignment.id, draftVersion: workspace.draftVersion, voiceId: narration.voiceId, entries: result,
+  return { source: 'standalone' as const, alignmentId: alignment.id, draftVersion: workspace.draftVersion, voiceId: voiceId, entries: result,
     reuseCount: result.filter(e => e.recordingId).length, generateCount: missing.length,
-    audioGenerationConfigured: Boolean(config.elevenLabs.apiKey),
+    extractCount: 0, canPrepare: true, blockedReason: null, audioGenerationConfigured: Boolean(config.elevenLabs.apiKey),
   };
 }
 
@@ -58,11 +79,13 @@ export async function requestVocabularyAudio(prisma: PrismaClient, textId: strin
     }
     const plan = await vocabularyAudioPlan(tx, textId);
     if (plan.draftVersion !== expectedDraftVersion) throw new ReaderReleaseError(409, 'The text changed. Check vocabulary audio again.');
+    if (!plan.canPrepare) throw new ReaderReleaseError(422, plan.blockedReason!);
     if (!plan.entries.length) throw new ReaderReleaseError(422, 'Select at least one learning word or phrase.');
     if (plan.generateCount && !plan.audioGenerationConfigured) throw new ReaderReleaseError(503, 'Word audio generation is not configured. Existing recordings can still be reused.');
-    const payload: VocabularyAudioPayload = { alignmentId: plan.alignmentId, draftVersion: plan.draftVersion, voiceId: plan.voiceId, entries: plan.entries };
+    const payload: VocabularyAudioPayload = { alignmentId: plan.alignmentId, draftVersion: plan.draftVersion, voiceId: plan.voiceId, entries: plan.entries,
+      ...(plan.source === 'sentences' ? { source: 'sentences' as const } : {}) };
     return createOrReplayJob(tx, { textId, actorId, idempotencyKey, kind: 'GENERATE_VOCABULARY', requestPayload: payload,
-      reservedCharacters: [...new Map(plan.entries.filter(e => !e.recordingId).map(e => [normalizeVocabulary(e.text), e.text])).values()].reduce((sum, text) => sum + text.length, 0) });
+      reservedCharacters: plan.source === 'sentences' ? 0 : [...new Map(plan.entries.filter(e => !e.recordingId).map(e => [normalizeVocabulary(e.text), e.text])).values()].reduce((sum, text) => sum + text.length, 0) });
   }, { timeout: 60000 });
 }
 
@@ -124,6 +147,20 @@ async function recordingFor(prisma: PrismaClient, job: AudioJob, entry: PlanEntr
 export async function runGenerateVocabularyJob(prisma: PrismaClient, job: AudioJob) {
   const payload = job.requestPayload as unknown as VocabularyAudioPayload;
   try {
+    if (payload.source === 'sentences') {
+      await prisma.$transaction(async tx => {
+        await lockText(tx, job.textId);
+        const draft = await inspectReaderDraft(tx, job.textId);
+        if (draft.workspace.currentAlignmentId !== payload.alignmentId || draft.workspace.draftVersion !== payload.draftVersion)
+          throw new ReaderReleaseError(409, 'The draft changed. Check vocabulary audio again.');
+        if (!draft.sentenceOnly) throw new ReaderReleaseError(409, 'Sentence recordings changed. Check vocabulary audio again.');
+        const extractedCount = draft.missingClipOccurrenceIds.length;
+        await extractMissingClips(tx, draft);
+        await tx.textWorkspace.update({ where: { textId: job.textId }, data: { draftVersion: { increment: 1 } } });
+        await completeJob(tx, job.id, { resultId: JSON.stringify({ generatedCount: 0, extractedCount, reusedCount: payload.entries.length - extractedCount }) });
+      }, { timeout: 60000 });
+      return;
+    }
     const workspace = await prisma.textWorkspace.findUniqueOrThrow({ where: { textId: job.textId } });
     if (workspace.currentAlignmentId !== payload.alignmentId || workspace.draftVersion !== payload.draftVersion)
       throw new ReaderReleaseError(409, 'The draft changed. Check vocabulary audio again.');

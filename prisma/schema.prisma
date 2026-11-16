@@ -263,6 +263,7 @@ model TextWorkspace {
   currentContentRevisionId String?
   currentNarrationId      String?
   currentAlignmentId      String?
+  sentenceEndOffsets      Json?
   approvedTextReleaseId   String?
   archivedAt              DateTime?
   createdAt               DateTime  @default(now())
@@ -358,8 +359,8 @@ model TextNarration {
   workspace         TextWorkspace @relation(fields: [textId], references: [textId], onDelete: Cascade)
   contentRevisionId String
   contentRevision   TextContentRevision @relation(fields: [contentRevisionId], references: [id])
-  assetId           String
-  asset             AudioAsset    @relation(fields: [assetId], references: [id])
+  assetId           String?
+  asset             AudioAsset?   @relation(fields: [assetId], references: [id])
   jobId             String
   provider          String
   model             String
@@ -387,8 +388,8 @@ model TextAlignment {
   workspace         TextWorkspace       @relation(fields: [textId], references: [textId], onDelete: Cascade)
   contentRevisionId String
   contentRevision   TextContentRevision @relation(fields: [contentRevisionId], references: [id])
-  narrationId       String
-  narration         TextNarration       @relation(fields: [narrationId], references: [id])
+  narrationId       String?
+  narration         TextNarration?      @relation(fields: [narrationId], references: [id])
   algorithmVersion  Int                 @default(1)
   status            TextAlignmentStatus
   sentences         Json

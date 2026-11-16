@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { startTestServer, createTestAdminUser, prisma, config, TestServer } from './helpers/authoringTestApp';
 import { installFakeElevenLabsFetch } from './helpers/fakeElevenLabsFetch';
 import { saveContentRevision } from '../../lib/textWorkspaces';
-import { runGenerateNarrationJob } from '../../lib/textAudioPipeline';
+import { runLegacyNarrationTestJob as runGenerateNarrationJob } from './helpers/legacyClips';
 import { setSelection, setTranslations } from '../../lib/textVocabulary';
 import { readAudioAssetRange, writeAudioAsset } from '../../lib/audioAssetStorage';
 import { decodeWav } from '../../lib/pcmWav';
@@ -105,7 +105,7 @@ describe('atomic lesson publication and unchanged mobile reader contract', () =>
     const narration = await prisma.textNarration.findUniqueOrThrow({ where: { id: f.texts[1].ws.currentNarrationId! } });
     // Hash-valid but undecodable audio tests failure after preflight and first-text extraction.
     const invalid = await writeAudioAsset({ textId: f.texts[1].id, kind: 'NARRATION', bytes: Buffer.from('invalid audio fixture') });
-    await prisma.audioAsset.update({ where: { id: narration.assetId }, data: invalid });
+    await prisma.audioAsset.update({ where: { id: narration.assetId! }, data: invalid });
     const result = await f.publish();
     assert.equal(result.status, 422);
     assert.equal(result.body.texts[0].textId, f.texts[1].id);
@@ -150,7 +150,7 @@ describe('atomic lesson publication and unchanged mobile reader contract', () =>
     const queued = await api(`/admin/lessons/${f.lesson.id}/texts/${t.id}/narration-jobs`, 'POST', { contentRevisionId: t.ws.currentContentRevisionId }, admin.token, { 'Idempotency-Key': crypto.randomUUID() });
     assert.equal(queued.status, 202);
     const ws = await prisma.textWorkspace.findUniqueOrThrow({ where: { textId: t.id } });
-    assert.equal(ws.currentNarrationId, null); assert.equal(ws.currentAlignmentId, null);
+    assert.equal(ws.currentNarrationId, t.ws.currentNarrationId); assert.equal(ws.currentAlignmentId, t.ws.currentAlignmentId);
     assert.equal((await f.publish()).status, 422);
     assert.equal((await api(`/learner/publications/${first.body.publicationId}`, 'GET', undefined, learnerToken)).status, 200);
     await runGenerateNarrationJob(prisma, await prisma.audioJob.update({ where: { id: queued.body.job.id }, data: { status: 'RUNNING' } }));
@@ -203,7 +203,7 @@ describe('atomic lesson publication and unchanged mobile reader contract', () =>
     await runGenerateNarrationJob(prisma, late);
     const workspace = await prisma.textWorkspace.findUniqueOrThrow({ where: { textId: t.id } });
     assert.equal(workspace.currentContentRevisionId, revised.revision.id);
-    assert.equal(workspace.currentNarrationId, null); assert.equal(workspace.currentAlignmentId, null);
+    assert.equal(workspace.currentNarrationId, null); assert.equal(workspace.currentAlignmentId, revised.workspace.currentAlignmentId);
     assert.equal((await prisma.audioJob.findUniqueOrThrow({ where: { id: late.id } })).status, 'SUCCEEDED');
   });
 

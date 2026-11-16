@@ -4,12 +4,12 @@ import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { startTestServer, createTestAdminUser, prisma, config, TestServer } from './helpers/authoringTestApp';
 import { installFakeElevenLabsFetch } from './helpers/fakeElevenLabsFetch';
-import { runGenerateNarrationJob } from '../../lib/textAudioPipeline';
+import { runLegacyNarrationTestJob } from './helpers/legacyClips';
 import { runGenerateVocabularyJob } from '../../lib/standaloneVocabulary';
 import { ReaderManifest } from '../../types/reader';
 import { failExpiredVocabularyJobs } from '../../lib/audioJobs';
 
-describe('standalone vocabulary audio and bulk learner selection', () => {
+describe('legacy standalone vocabulary audio and bulk learner selection', () => {
   let server: TestServer, adminToken: string, learnerToken: string, restore: () => void;
   let providerFetch: typeof fetch;
   const dispatched: string[] = [];
@@ -35,7 +35,7 @@ describe('standalone vocabulary audio and bulk learner selection', () => {
     const path = `/admin/lessons/${lessonId}/texts/${textId}`;
     const ws = (await api(path)).body.text;
     const requested = await api(path + '/narration-jobs', 'POST', { contentRevisionId: ws.contentRevision.id, voiceProfileId: voiceId }, adminToken, { 'Idempotency-Key': crypto.randomUUID() });
-    await runGenerateNarrationJob(prisma, await prisma.audioJob.update({ where: { id: requested.body.job.id }, data: { status: 'RUNNING' } }));
+    await runLegacyNarrationTestJob(prisma, await prisma.audioJob.update({ where: { id: requested.body.job.id }, data: { status: 'RUNNING' } }));
     const data = (await api(path + '/occurrences')).body;
     const words = data.occurrences as { id: string; text: string }[];
     const entries = words.flatMap((w, i) => w.text === word ? [{ occurrenceId: w.id, endOccurrenceId: words[i + 1].id, translation }] : []);
@@ -94,7 +94,7 @@ describe('standalone vocabulary audio and bulk learner selection', () => {
     assert.equal(a.recording!.assetId, b.recording!.assetId); assert.notEqual(a.recording!.meaningId, b.recording!.meaningId);
     const differentVoice = await fixture(first.word, 'այլ իմաստ', 'another-standalone-voice');
     assert.equal((await differentVoice.plan()).body.generateCount, 1);
-    await run((await request(differentVoice)).job.id); assert.equal(dispatched.length, before + 2, 'one new narration and one new voice recording');
+    await run((await request(differentVoice)).job.id); assert.equal(dispatched.length, before + 2, 'one legacy narration and one new voice recording');
   });
 
   it('serializes duplicate generation across different lessons and rejects stale previews', async () => {

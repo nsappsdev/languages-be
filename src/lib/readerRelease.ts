@@ -7,6 +7,8 @@ import { ReaderAsset, ReaderText } from '../types/reader';
 import { assertNonOverlappingRanges, resolveVocabularyRange } from './vocabularyRanges';
 import { normalizeVocabulary } from './vocabularyLibrary';
 import { decodeWav } from './pcmWav';
+import { splitSentences } from './sentenceSegmentation';
+import type { SentenceRecording } from './sentenceNarration';
 
 type Db = Prisma.TransactionClient;
 
@@ -42,17 +44,38 @@ export async function inspectReaderDraft(db: Db, textId: string) {
       include: { translations: true, recording: { include: { asset: true, meaning: { include: { term: true } } } }, wordClips: { include: { asset: true } } } }),
     db.audioJob.findFirst({ where: { textId, kind: 'GENERATE_NARRATION', status: { in: ['QUEUED', 'RUNNING'] } } }),
   ]);
+  const settings = narration?.requestSettings as { generationMode?: string; sentences?: SentenceRecording[] } | undefined;
+  const sentenceOnly = settings?.generationMode === 'sentence-assets';
+  const recordings = sentenceOnly ? settings?.sentences ?? [] : [];
+  const sentenceAssets = await db.audioAsset.findMany({ where: { id: { in: recordings.flatMap(s => s.assetId ? [s.assetId] : []) } } });
+  const assetsById = new Map(sentenceAssets.map(asset => [asset.id, asset]));
+  let sentenceAudioValid = false;
+  if (sentenceOnly && revision) {
+    const spans = splitSentences(revision.text, revision.sourceLanguage, workspace.sentenceEndOffsets as number[] | undefined ?? undefined);
+    let end = 0;
+    sentenceAudioValid = spans.length === recordings.length && recordings.every((recording, index) => {
+      const asset = assetsById.get(recording.assetId ?? '');
+      const span = spans[index];
+      const valid = !!span && recording.charStart === span.charStart && recording.charEnd === span.charEnd &&
+        recording.text === span.text && recording.startSample === end && validReaderAsset(asset) && asset.kind === 'SENTENCE' &&
+        asset.textId === textId && asset.sampleRate === 24000 && recording.endSample - end === asset.frameCount;
+      end = recording.endSample;
+      return valid;
+    });
+  }
+  const frameCount = sentenceOnly ? recordings.at(-1)?.endSample ?? 0 : narration?.asset?.frameCount ?? 0;
   const narrationValid = !activeNarration && !workspace.archivedAt && !!revision && revision.textId === textId && !!narration && narration.textId === textId &&
-    narration.provider === 'elevenlabs' && narration.asset.kind === 'NARRATION' && narration.asset.textId === textId && narration.contentRevisionId === revision.id && narration.inputTextSha256 === revision.textSha256 && validReaderAsset(narration.asset);
+    narration.provider === 'elevenlabs' && narration.contentRevisionId === revision.id && narration.inputTextSha256 === revision.textSha256 &&
+    (sentenceOnly ? sentenceAudioValid : validReaderAsset(narration.asset) && narration.asset.kind === 'NARRATION' && narration.asset.textId === textId);
   const lineageValid = narrationValid && !!alignment && alignment.textId === textId &&
     alignment.contentRevisionId === revision.id && alignment.narrationId === narration.id && alignment.status === 'OK' &&
     alignment.occurrences.length > 0 && alignment.occurrences.every(o => o.mappingStatus === 'MAPPED' &&
       o.speechStartSample !== null && o.speechEndSample !== null && o.speechStartSample >= 0 &&
-      o.speechEndSample > o.speechStartSample && o.speechEndSample <= narration.asset.frameCount! &&
+      o.speechEndSample > o.speechStartSample && o.speechEndSample <= frameCount &&
       revision.text.slice(o.charStart, o.charEnd) === o.surfaceText);
   const boundaries = lineageValid ? computeContiguousCutBoundaries(alignment!.occurrences.map(o => ({
     ordinal: o.ordinal, speechStartSample: o.speechStartSample!, speechEndSample: o.speechEndSample!,
-  })), narration!.asset.frameCount!) : null;
+  })), frameCount) : null;
   let alignmentValid = lineageValid && boundaries?.status === 'OK';
   try { assertNonOverlappingRanges(alignment?.occurrences ?? [], entries.filter(entry => entry.selected)); }
   catch { alignmentValid = false; }
@@ -63,7 +86,13 @@ export async function inspectReaderDraft(db: Db, textId: string) {
     try {
       const range = resolveVocabularyRange(alignment.occurrences, entry);
       ranges.set(entry.occurrenceId, range);
-      vocabularyCuts.set(entry.occurrenceId, { startSample: cuts.get(range.first.ordinal)!.startSample, endSample: cuts.get(range.last.ordinal)!.endSample });
+      const sentence = sentenceOnly ? recordings.find(s => range.first.charStart >= s.charStart && range.last.charEnd <= s.charEnd) : undefined;
+      const previous = alignment.occurrences.find(word => word.ordinal === range.first.ordinal - 1);
+      vocabularyCuts.set(entry.occurrenceId, {
+        // Keep the lead-in before the first consonant, bounded to this sentence.
+        startSample: sentence ? Math.max(sentence.startSample, previous?.speechEndSample ?? sentence.startSample) : cuts.get(range.first.ordinal)!.startSample,
+        endSample: Math.min(sentence?.endSample ?? frameCount, cuts.get(range.last.ordinal)!.endSample),
+      });
     } catch { /* Invalid inactive historical entries do not participate in publication. */ }
   }
   const clips = new Map(entries.map(entry => {
@@ -71,19 +100,19 @@ export async function inspectReaderDraft(db: Db, textId: string) {
     const range = ranges.get(entry.occurrenceId);
     const cut = vocabularyCuts.get(entry.occurrenceId);
     const translation = entry.translations.find(t => ['hy', 'am'].includes(t.languageCode))?.translation ?? '';
-    const shared = recording && range && cut && narration && revision && recording.voiceId === narration.voiceId &&
+    const shared = !sentenceOnly && recording && range && cut && narration && revision && recording.voiceId === narration.voiceId &&
       recording.meaning.term.language === revision.sourceLanguage.trim().toLowerCase() &&
       recording.meaning.term.normalizedText === normalizeVocabulary(revision.text.slice(range.first.charStart, range.last.charEnd)) &&
       recording.meaning.normalizedTranslation === normalizeVocabulary(translation) && recording.asset.kind === 'WORD_CLIP' && validReaderAsset(recording.asset)
       ? { asset: recording.asset, startSample: cut.startSample, endSample: cut.endSample, shared: true } : undefined;
-    const legacy = !entry.recordingId ? entry.wordClips.find(clip =>
+    const extracted = (sentenceOnly || (!entry.recordingId && narration?.asset)) ? entry.wordClips.find(clip =>
     alignmentValid && clip.textId === textId && clip.narrationId === narration!.id && clip.alignmentId === alignment!.id &&
     clip.occurrenceId === entry.occurrenceId && clip.entryId === entry.id && clip.asset.textId === textId && clip.asset.kind === 'WORD_CLIP' &&
     vocabularyCuts.get(entry.occurrenceId)?.startSample === clip.startSample && vocabularyCuts.get(entry.occurrenceId)?.endSample === clip.endSample &&
-    clip.startSample >= 0 && clip.endSample > clip.startSample && clip.endSample <= narration!.asset.frameCount! &&
-    clip.asset.frameCount === clip.endSample - clip.startSample && clip.asset.sampleRate === narration!.asset.sampleRate &&
+    clip.startSample >= 0 && clip.endSample > clip.startSample && clip.endSample <= frameCount &&
+    clip.asset.frameCount === clip.endSample - clip.startSample && clip.asset.sampleRate === (sentenceOnly ? 24000 : narration!.asset!.sampleRate) &&
     validReaderAsset(clip.asset)) : undefined;
-    return [entry.id, shared ?? (legacy ? { asset: legacy.asset, startSample: legacy.startSample, endSample: legacy.endSample, shared: false } : undefined)] as const;
+    return [entry.id, shared || (extracted ? { asset: extracted.asset, startSample: extracted.startSample, endSample: extracted.endSample, shared: false } : undefined)] as const;
   }));
   const readiness = computeTextReadiness({
     narrationStatus: narrationValid ? 'READY' : 'MISSING',
@@ -98,12 +127,13 @@ export async function inspectReaderDraft(db: Db, textId: string) {
     const sentences = alignment.sentences as unknown as { id: string; text: string; charStart: number; charEnd: number; startSample?: number; endSample?: number }[];
     snapshot = {
       textId, textReleaseId: '', contentRevisionId: revision.id, narrationId: narration.id, alignmentId: alignment.id,
-      text: revision.text, sourceLanguage: revision.sourceLanguage, narration: assetDto(narration.asset),
-      ...((narration.requestSettings as { generationMode?: string }).generationMode === 'sentences'
+      text: revision.text, sourceLanguage: revision.sourceLanguage, narration: sentenceOnly
+        ? { kind: 'sentences', sampleRate: 24000, frameCount } : assetDto(narration.asset!),
+      ...(sentenceOnly || (narration.requestSettings as { generationMode?: string }).generationMode === 'sentences'
         ? { narrationSource: 'SENTENCES' as const } : {}),
-      sentences: sentences.map(sentence => {
+      sentences: sentences.map((sentence, index) => {
         const words = alignment.occurrences.filter(o => o.sentenceId === sentence.id);
-        return { ...sentence, startSample: sentence.startSample ?? words[0]?.speechStartSample ?? 0,
+        return { ...sentence, ...(sentenceOnly ? { asset: assetDto(assetsById.get(recordings[index].assetId!)!) } : {}), startSample: sentence.startSample ?? words[0]?.speechStartSample ?? 0,
           endSample: sentence.endSample ?? words[words.length - 1]?.speechEndSample ?? 0 };
       }),
       occurrences: alignment.occurrences.filter(o => !phraseMembers.has(o.id)).map(o => {
@@ -120,10 +150,11 @@ export async function inspectReaderDraft(db: Db, textId: string) {
     };
   }
   if (activeNarration) readiness.reasonCodes.push('NARRATION_IN_PROGRESS');
-  return { workspace, readiness, snapshot, revision, narration, alignment, clips, cuts, vocabularyCuts,
+  return { workspace, readiness, snapshot, revision, narration, alignment, clips, cuts, vocabularyCuts, sentenceOnly, recordings, assetsById,
     missingClipOccurrenceIds: entries.filter(e => e.selected && !clips.get(e.id)).map(e => e.occurrenceId) };
 }
 
 export function readerAssetIds(text: ReaderText) {
-  return [text.narration.id, ...text.occurrences.flatMap(o => o.learning ? [o.learning.clip.id] : [])];
+  return [...('id' in text.narration ? [text.narration.id] : text.sentences.flatMap(s => s.asset ? [s.asset.id] : [])),
+    ...text.occurrences.flatMap(o => o.learning ? [o.learning.clip.id] : [])];
 }

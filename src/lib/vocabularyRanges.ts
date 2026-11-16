@@ -9,9 +9,8 @@ export function resolveVocabularyRange(words: WordOccurrence[], range: Vocabular
   const end = range.endOccurrenceId ? words.findIndex(word => word.id === range.endOccurrenceId) : start;
   if (start < 0 || end < start) throw new ReaderReleaseError(422, 'Choose a valid word or forward phrase range.');
   const members = words.slice(start, end + 1);
-  if (members.some(word => word.sentenceId !== members[0].sentenceId || word.mappingStatus !== 'MAPPED' ||
-      word.speechStartSample === null || word.speechEndSample === null))
-    throw new ReaderReleaseError(422, 'A phrase must contain consecutive aligned words in one sentence.');
+  if (members.some(word => word.sentenceId !== members[0].sentenceId))
+    throw new ReaderReleaseError(422, 'A phrase must contain consecutive words in one sentence.');
   return { first: members[0], last: members[members.length - 1], members };
 }
 

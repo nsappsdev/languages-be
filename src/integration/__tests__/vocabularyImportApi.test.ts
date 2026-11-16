@@ -3,7 +3,7 @@ import { before, after, describe, it } from 'node:test';
 import crypto from 'crypto';
 import { startTestServer, createTestAdminUser, prisma, TestServer } from './helpers/authoringTestApp';
 import { installFakeElevenLabsFetch } from './helpers/fakeElevenLabsFetch';
-import { runGenerateNarrationJob } from '../../lib/textAudioPipeline';
+import { runLegacyNarrationTestJob as runGenerateNarrationJob } from './helpers/legacyClips';
 import { readAudioAssetRange } from '../../lib/audioAssetStorage';
 import { decodeWav } from '../../lib/pcmWav';
 import { ReaderManifest } from '../../types/reader';
@@ -58,6 +58,7 @@ describe('bulk vocabulary import and phrase publication', () => {
     let cursor = 0, reconstructed = '';
     for (const word of text.occurrences) { reconstructed += text.text.slice(cursor, word.charStart) + word.text; cursor = word.charEnd; }
     assert.equal(reconstructed + text.text.slice(cursor), text.text);
+    assert.ok('id' in text.narration, 'Historical fixture publishes a full narration asset');
     const narrationAsset = await prisma.audioAsset.findUniqueOrThrow({ where: { id: text.narration.id } });
     const narration = decodeWav(readAudioAssetRange(narrationAsset.storageKey, 0, narrationAsset.byteLength)!.buffer);
     for (const phrase of phrases) {
@@ -120,13 +121,13 @@ describe('bulk vocabulary import and phrase publication', () => {
     assert.equal((await f.publish()).status, 422);
   });
 
-  it('rejects stale alignment and unreliable narration before writes', async () => {
+  it('allows imports with unreliable timing but rejects stale source maps', async () => {
     const f = await fixture();
     const batch = [{ occurrenceId: f.words[1].id, translation: 'նայել' }];
     await prisma.textAlignment.update({ where: { id: f.data.alignmentId }, data: { status: 'NEEDS_REVIEW' } });
-    assert.equal((await f.import(batch)).status, 409);
+    assert.equal((await f.import(batch)).status, 200);
     await api(f.path + '/content-revisions', 'POST', { text: 'A different text.' });
     assert.equal((await f.import(batch)).status, 409);
-    assert.equal(await prisma.textVocabularyEntry.count({ where: { textId: f.textId } }), 0);
+    assert.equal(await prisma.textVocabularyEntry.count({ where: { textId: f.textId } }), 1);
   });
 });

@@ -1,9 +1,14 @@
 import crypto from 'crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { lockText } from './authoringTransaction';
+import { ensureTextMap } from './textMap';
 
 export async function ensureWorkspace(prisma: PrismaClient, textId: string) {
-  return prisma.textWorkspace.findUniqueOrThrow({ where: { textId } });
+  const workspace = await prisma.textWorkspace.findUniqueOrThrow({ where: { textId } });
+  if (!workspace.currentContentRevisionId) return workspace;
+  const alignment = workspace.currentAlignmentId ? await prisma.textAlignment.findUnique({ where: { id: workspace.currentAlignmentId }, include: { _count: { select: { occurrences: true } } } }) : null;
+  if (alignment?.contentRevisionId === workspace.currentContentRevisionId && alignment._count.occurrences) return workspace;
+  return prisma.$transaction(async tx => { await lockText(tx, textId); return ensureTextMap(tx, textId); });
 }
 
 export class TextWorkspaceError extends Error {
@@ -24,18 +29,18 @@ export async function saveContentRevisionInTransaction(tx: Prisma.TransactionCli
   const latest = workspace.currentContentRevisionId
     ? await tx.textContentRevision.findUnique({ where: { id: workspace.currentContentRevisionId } }) : null;
   if (latest && latest.textSha256 === textSha256 && latest.sourceLanguage === params.sourceLanguage) {
-    return { revision: latest, isNoOp: true, workspace };
+    return { revision: latest, isNoOp: true, workspace: await ensureTextMap(tx, params.textId) };
   }
   const last = await tx.textContentRevision.findFirst({ where: { textId: params.textId }, orderBy: { sequence: 'desc' } });
   const revision = await tx.textContentRevision.create({ data: {
     textId: params.textId, sequence: (last?.sequence ?? 0) + 1, text: params.text, textSha256,
     sourceLanguage: params.sourceLanguage, authorId: params.actorId,
   } });
-  const updatedWorkspace = await tx.textWorkspace.update({ where: { textId: params.textId }, data: {
-    currentContentRevisionId: revision.id, currentNarrationId: null, currentAlignmentId: null,
+  await tx.textWorkspace.update({ where: { textId: params.textId }, data: {
+    currentContentRevisionId: revision.id, currentNarrationId: null, currentAlignmentId: null, sentenceEndOffsets: Prisma.DbNull,
     approvedTextReleaseId: null, draftVersion: { increment: 1 },
   } });
-  return { revision, isNoOp: false, workspace: updatedWorkspace };
+  return { revision, isNoOp: false, workspace: await ensureTextMap(tx, params.textId) };
 }
 
 export async function saveContentRevision(prisma: PrismaClient, params: SaveContentRevisionParams) {
