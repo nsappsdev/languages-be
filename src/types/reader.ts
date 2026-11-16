@@ -34,14 +34,14 @@ export interface ReaderText {
   alignmentId: string;
   text: string;
   sourceLanguage: string;
-  narration: ReaderAsset;
+  narration: ReaderAsset | { kind: 'sentences'; sampleRate: number; frameCount: number };
   narrationSource?: 'SENTENCES';
-  sentences: { id: string; text: string; charStart: number; charEnd: number; startSample: number; endSample: number }[];
+  sentences: { id: string; text: string; charStart: number; charEnd: number; startSample: number; endSample: number; asset?: ReaderAsset }[];
   occurrences: ReaderOccurrence[];
 }
 
 export interface ReaderManifest {
-  schemaVersion: 2;
+  schemaVersion: 2 | 3;
   lessonId: string;
   title: string;
   description: string | null;

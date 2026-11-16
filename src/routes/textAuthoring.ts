@@ -12,7 +12,8 @@ import { TextWorkspaceError } from '../lib/textWorkspaces';
 import { lockText } from '../lib/authoringTransaction';
 import { requestVocabularyAudio, vocabularyAudioPlan } from '../lib/standaloneVocabulary';
 import { splitSentences } from '../lib/sentenceSegmentation';
-import type { SentenceRecording } from '../lib/sentenceNarration';
+import { sentenceAudioState, SentenceRecording } from '../lib/sentenceNarration';
+import { saveSentencePlan } from '../lib/textMap';
 
 const router = Router();
 const run = (handler: (req: AuthenticatedRequest, res: Response) => Promise<unknown>) =>
@@ -74,6 +75,8 @@ router.get(
     ]);
     const lastRequest = (activeJob ?? latestJob)?.requestPayload as { contentRevisionId?: string; sentenceEndOffsets?: number[] } | undefined;
 
+    const ends = context.workspace.sentenceEndOffsets as number[] | null ?? (lastRequest?.contentRevisionId === contentRevision?.id ? lastRequest?.sentenceEndOffsets : undefined);
+    const sentenceState = contentRevision ? await sentenceAudioState(prisma, context.item.id, contentRevision.text, contentRevision.sourceLanguage, narration?.voiceId ?? config.elevenLabs.defaultVoiceId, ends) : null;
     return res.json({
       text: {
         id: context.item.id,
@@ -81,7 +84,8 @@ router.get(
         draftVersion: context.workspace.draftVersion,
         activeNarrationJobId: activeJob?.id ?? null,
         latestNarrationJobId: latestJob?.id ?? null,
-        sentenceEndOffsets: lastRequest?.contentRevisionId === contentRevision?.id ? lastRequest?.sentenceEndOffsets : undefined,
+        sentenceEndOffsets: ends,
+        sentences: sentenceState?.sentences ?? [],
         activeVocabularyJobId: vocabularyJob?.id ?? null,
         contentRevision,
         narration: narration
@@ -135,10 +139,30 @@ router.post(
   }),
 );
 
+router.put('/admin/lessons/:lessonId/texts/:textId/sentences', authenticate, run(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const context = await loadTextContext(req.params.lessonId, req.params.textId);
+  if (!context) return res.status(404).json({ message: 'Text not found' });
+  const parsed = z.object({ contentRevisionId: z.string(), expectedDraftVersion: z.number().int(), sentenceEndOffsets: z.array(z.number().int().positive()).min(1).max(500) }).strict().safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ message: 'Provide the current text version and sentence boundaries.' });
+  await prisma.$transaction(async tx => {
+    await lockText(tx, context.item.id);
+    const current = await tx.textWorkspace.findUniqueOrThrow({ where: { textId: context.item.id } });
+    if (current.currentContentRevisionId !== parsed.data.contentRevisionId || current.draftVersion !== parsed.data.expectedDraftVersion)
+      throw new ReaderReleaseError(409, 'The text changed. Reload before saving sentences.');
+    if (await tx.audioJob.findFirst({ where: { textId: context.item.id, status: { in: ['QUEUED', 'RUNNING'] } } }))
+      throw new ReaderReleaseError(409, 'Wait for audio generation before changing sentences.');
+    const revision = await tx.textContentRevision.findUniqueOrThrow({ where: { id: current.currentContentRevisionId } });
+    await saveSentencePlan(tx, revision, parsed.data.sentenceEndOffsets);
+  });
+  return res.json({ saved: true });
+}));
+
 const narrationJobSchema = z.object({
   contentRevisionId: z.string().min(1),
   voiceProfileId: z.string().min(1).optional(),
   sentenceEndOffsets: z.array(z.number().int().positive()).min(1).max(500).optional(),
+  sentenceIndex: z.number().int().nonnegative().optional(),
   regenerateSentenceIndex: z.number().int().nonnegative().optional(),
   expectedDraftVersion: z.number().int().positive().optional(),
 });
@@ -172,6 +196,9 @@ router.post(
       return res.status(409).json({ message: 'contentRevisionId is not the current saved revision for this text' });
     }
 
+    if (parsed.data.sentenceIndex !== undefined && parsed.data.regenerateSentenceIndex !== undefined)
+      return res.status(400).json({ message: 'Choose either generate or regenerate for one sentence.' });
+
     const voiceId = parsed.data.voiceProfileId ?? config.elevenLabs.defaultVoiceId;
 
     try {
@@ -182,34 +209,25 @@ router.post(
           throw new ReaderReleaseError(409, 'Text changed. Save again before generating narration.');
         const revision = await tx.textContentRevision.findUniqueOrThrow({ where: { id: parsed.data.contentRevisionId } });
         let sentences;
-        try { sentences = splitSentences(revision.text, revision.sourceLanguage, parsed.data.sentenceEndOffsets); }
+        const endOffsets = parsed.data.sentenceEndOffsets ?? workspace.sentenceEndOffsets as number[] | undefined ?? undefined;
+        try { sentences = splitSentences(revision.text, revision.sourceLanguage, endOffsets); }
         catch (error) { throw new ReaderReleaseError(422, (error as Error).message); }
-        if (parsed.data.regenerateSentenceIndex !== undefined && parsed.data.regenerateSentenceIndex >= sentences.length)
+        if ([parsed.data.sentenceIndex, parsed.data.regenerateSentenceIndex].some(index => index !== undefined && index >= sentences.length))
           throw new ReaderReleaseError(422, 'Choose a sentence from the current text.');
         const existing = await tx.audioJob.findUnique({ where: { textId_kind_idempotencyKey: {
           textId: context.item.id, kind: 'GENERATE_NARRATION', idempotencyKey,
         } } });
         if (!existing && parsed.data.expectedDraftVersion !== undefined && workspace.draftVersion !== parsed.data.expectedDraftVersion)
           throw new ReaderReleaseError(409, 'The text changed. Reload before preparing sentence audio.');
-        if (!existing) {
-          const previous = await tx.textAlignment.findFirst({ where: {
-            textId: context.item.id, contentRevisionId: revision.id, status: 'OK',
-          }, orderBy: { createdAt: 'desc' }, include: { occurrences: true, entries: { where: { selected: true, archivedAt: null, endOccurrenceId: { not: null } } } } });
-          for (const entry of previous?.entries ?? []) {
-            const first = previous!.occurrences.find(word => word.id === entry.occurrenceId);
-            const last = previous!.occurrences.find(word => word.id === entry.endOccurrenceId);
-            if (first && last && !sentences.some(sentence => sentence.charStart <= first.charStart && sentence.charEnd >= last.charEnd))
-              throw new ReaderReleaseError(422, 'A sentence break divides a selected learning phrase. Join those sentences or remove the phrase first.');
-          }
-        }
+        if (!existing) await saveSentencePlan(tx, revision, endOffsets ?? sentences.map((span, index) => index === sentences.length - 1 ? revision.text.length : span.charEnd));
         const result = await createOrReplayJob(tx, {
           textId: context.item.id, kind: 'GENERATE_NARRATION', actorId: req.user!.id, idempotencyKey,
-          requestPayload: { ...parsed.data, voiceId, generationMode: 'sentences' },
-          reservedCharacters: parsed.data.regenerateSentenceIndex === undefined
-            ? revision.text.length : sentences[parsed.data.regenerateSentenceIndex].text.length,
+          requestPayload: { ...parsed.data, voiceId, generationMode: 'sentences', sentenceEndOffsets: endOffsets ?? sentences.map((span, index) => index === sentences.length - 1 ? revision.text.length : span.charEnd) },
+          reservedCharacters: (parsed.data.sentenceIndex ?? parsed.data.regenerateSentenceIndex) === undefined
+            ? revision.text.length : sentences[(parsed.data.sentenceIndex ?? parsed.data.regenerateSentenceIndex)!].text.length,
         });
         if (!result.replay) await tx.textWorkspace.update({ where: { textId: context.item.id }, data: {
-          currentNarrationId: null, currentAlignmentId: null, approvedTextReleaseId: null, draftVersion: { increment: 1 },
+          approvedTextReleaseId: null, draftVersion: { increment: 1 },
         } });
         return result;
       });
@@ -361,7 +379,7 @@ const importSchema = z.object({
     occurrenceId: z.string().min(1),
     endOccurrenceId: z.string().min(1).nullable().optional(),
     translation: z.string().trim().min(1).max(2000),
-  }).strict()).min(1).max(500),
+  }).strict()).min(1),
 }).strict();
 
 router.post('/admin/lessons/:lessonId/texts/:textId/vocabulary/import', authenticate, run(async (req, res) => {
@@ -369,7 +387,7 @@ router.post('/admin/lessons/:lessonId/texts/:textId/vocabulary/import', authenti
   const context = await loadTextContext(req.params.lessonId, req.params.textId);
   if (!context) return res.status(404).json({ message: 'Text not found' });
   const parsed = importSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ message: 'Invalid import. Supply up to 500 words or phrases with Armenian translations.', issues: parsed.error.flatten() });
+  if (!parsed.success) return res.status(400).json({ message: 'Invalid import. Supply words or phrases with Armenian translations.', issues: parsed.error.flatten() });
   const entries = await importVocabulary(prisma, { textId: context.item.id, ...parsed.data });
   return res.json({ entries, importedCount: entries.length });
 }));

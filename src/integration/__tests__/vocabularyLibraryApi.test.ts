@@ -4,7 +4,7 @@ import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { startTestServer, createTestAdminUser, prisma, config, TestServer } from './helpers/authoringTestApp';
 import { installFakeElevenLabsFetch } from './helpers/fakeElevenLabsFetch';
-import { runGenerateNarrationJob } from '../../lib/textAudioPipeline';
+import { runLegacyNarrationTestJob as runGenerateNarrationJob } from './helpers/legacyClips';
 import { ReaderManifest } from '../../types/reader';
 import { indexPublishedVocabulary } from '../../lib/vocabularyLibrary';
 import { prepareLegacyClips } from './helpers/legacyClips';

@@ -2,7 +2,7 @@ import { strict as assert } from 'node:assert';
 import { after, before, describe, it } from 'node:test';
 import { startTestServer, createTestAdminUser, prisma, type TestServer } from './helpers/authoringTestApp';
 import { installFakeElevenLabsFetch } from './helpers/fakeElevenLabsFetch';
-import { runGenerateNarrationJob } from '../../lib/textAudioPipeline';
+import { runLegacyNarrationTestJob as runGenerateNarrationJob } from './helpers/legacyClips';
 import { prepareLegacyClips } from './helpers/legacyClips';
 
 describe('text authoring API (generate -> align -> select -> translate -> publish)', () => {

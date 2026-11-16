@@ -1,10 +1,29 @@
 import { strict as assert } from 'node:assert';
 import { describe, it } from 'node:test';
 import { splitSentences } from '../sentenceSegmentation';
-import { assembleSentences } from '../sentenceNarration';
+import { assembleSentences, mapSentenceRecordings } from '../sentenceNarration';
 import { buildTextAlignment } from '../textOccurrenceAlignment';
 
 describe('sentence audio boundaries and assembly', () => {
+  it('clamps a one-sample timestamp rounding difference but rejects larger overruns', () => {
+    const text = 'SPY';
+    const recorded = (frameCount: number) => ({ assetId: 'sentence-rounding',
+      audio: { sampleRate: 24000, channels: 1, bitsPerSample: 16, frameCount, samples: new Int16Array(frameCount) },
+      alignment: { characters: ['S', 'P', 'Y'], character_start_times_seconds: [1.637, 1.695, 1.811],
+        character_end_times_seconds: [1.695, 1.811, 2.74] } });
+    const spans = splitSentences(text);
+    const result = mapSentenceRecordings(text, spans, [recorded(65759)]);
+    assert.equal(result.mapping.status, 'OK');
+    assert.equal(result.mapping.occurrences[0].speechEndSample, 65759);
+    assert.equal(result.sentences[0].alignmentIssue, undefined);
+    const exact = mapSentenceRecordings(text, spans, [recorded(65760)]);
+    assert.equal(exact.mapping.occurrences[0].speechEndSample, 65760);
+    const invalid = mapSentenceRecordings(text, spans, [recorded(65758)]);
+    assert.equal(invalid.mapping.status, 'NEEDS_REVIEW');
+    assert.ok(invalid.sentences[0].alignmentIssue);
+    assert.equal(invalid.mapping.occurrences[0].speechEndSample, null);
+  });
+
   it('keeps abbreviations, decimals, closing quotes and original source offsets', () => {
     const text = '  Dr. Smith paid 3.50 dollars. "Really?"  Yes!  ';
     const spans = splitSentences(text);

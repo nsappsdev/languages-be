@@ -11,22 +11,31 @@ import { indexPublishedVocabulary } from './vocabularyLibrary';
 
 type Draft = Awaited<ReturnType<typeof inspectReaderDraft>>;
 
-// Compatibility for already queued legacy extraction jobs and historical fixtures.
-// New lesson publication never calls this function. Files are immutable;
+// Extract the original occurrence from its sentence (or a legacy full recording).
+// Files are immutable;
 // an interrupted transaction may leave unreferenced files for a later audited cleanup.
 export async function extractMissingClips(tx: Prisma.TransactionClient, draft: Draft) {
-  if (!draft.readiness.narrationValid || draft.readiness.alignmentStatus !== 'OK' || draft.readiness.selectedMissingTranslationCount || !draft.narration || !draft.alignment) throw new ReaderReleaseError(422, 'Text is not ready');
+  if (!draft.readiness.narrationValid || draft.readiness.alignmentStatus !== 'OK' || draft.readiness.selectedMissingTranslationCount || !draft.narration || !draft.alignment) throw new ReaderReleaseError(422, 'Generate sentence audio and resolve its timing before preparing word audio.');
   if (!draft.missingClipOccurrenceIds.length) return;
   const narration = draft.narration;
-  const stored = readAudioAssetRange(narration.asset.storageKey, 0, narration.asset.byteLength);
-  if (!stored) throw new ReaderReleaseError(422, 'Narration audio is unavailable');
-  const decoded = decodeWav(stored.buffer);
-  if (decoded.frameCount !== narration.asset.frameCount || decoded.sampleRate !== narration.asset.sampleRate)
-    throw new ReaderReleaseError(422, 'Narration audio metadata is inconsistent');
+  const sources = new Map<string, ReturnType<typeof decodeWav>>();
   for (const occurrenceId of draft.missingClipOccurrenceIds) {
     const cut = draft.vocabularyCuts.get(occurrenceId)!;
+    const sentence = draft.sentenceOnly ? draft.recordings.find(s => cut.startSample >= s.startSample && cut.endSample <= s.endSample) : undefined;
+    const source = draft.sentenceOnly ? draft.assetsById.get(sentence?.assetId ?? '') : narration.asset;
+    if (!source) throw new ReaderReleaseError(422, 'The source sentence recording is unavailable.');
+    let decoded = sources.get(source.id);
+    if (!decoded) {
+      const stored = readAudioAssetRange(source.storageKey, 0, source.byteLength);
+      if (!stored) throw new ReaderReleaseError(422, 'Source audio is unavailable');
+      decoded = decodeWav(stored.buffer);
+      if (decoded.frameCount !== source.frameCount || decoded.sampleRate !== source.sampleRate)
+        throw new ReaderReleaseError(422, 'Source audio metadata is inconsistent');
+      sources.set(source.id, decoded);
+    }
     const entry = await tx.textVocabularyEntry.findUniqueOrThrow({ where: { alignmentId_occurrenceId: { alignmentId: draft.alignment.id, occurrenceId } } });
-    const clip = extractWordClip(decoded, cut.startSample, cut.endSample);
+    const offset = sentence?.startSample ?? 0;
+    const clip = extractWordClip(decoded, cut.startSample - offset, cut.endSample - offset);
     const written = await writeAudioAsset({ textId: narration.textId, kind: 'WORD_CLIP', bytes: encodeWav(clip) });
     const asset = await tx.audioAsset.create({ data: { textId: narration.textId, kind: 'WORD_CLIP',
       ...written, mimeType: 'audio/wav', sampleRate: clip.sampleRate, channels: clip.channels,
@@ -35,6 +44,7 @@ export async function extractMissingClips(tx: Prisma.TransactionClient, draft: D
       occurrenceId, entryId: entry.id, assetId: asset.id, startSample: cut.startSample, endSample: cut.endSample };
     await tx.wordClip.upsert({ where: { occurrenceId_extractionVersion: { occurrenceId, extractionVersion: 1 } }, create: data, update: data });
     await tx.wordOccurrence.update({ where: { id: occurrenceId }, data: { cutStartSample: cut.startSample, cutEndSample: cut.endSample } });
+    if (draft.sentenceOnly) await tx.textVocabularyEntry.update({ where: { id: entry.id }, data: { recordingId: null } });
   }
 }
 
@@ -67,7 +77,7 @@ export async function publishLesson(prisma: PrismaClient, lessonId: string, acto
         manifestSnapshot: snapshot as unknown as Prisma.InputJsonValue, authorId: actorId } });
       texts.push(snapshot);
     }
-    const manifest: ReaderManifest = { schemaVersion: 2, lessonId, title: lesson.title, description: lesson.description, texts };
+    const manifest: ReaderManifest = { schemaVersion: texts.some(text => !('id' in text.narration)) ? 3 : 2, lessonId, title: lesson.title, description: lesson.description, texts };
     // Include the reuse path so existing publications can be indexed without
     // creating new releases or audio files.
     await indexPublishedVocabulary(tx, lessonId, texts);

@@ -34,14 +34,9 @@ async function changeVocabulary(prisma: PrismaClient, params: {
     if (params.expectedDraftVersion !== undefined && workspace.draftVersion !== params.expectedDraftVersion)
       throw new ReaderReleaseError(409, 'This text changed after the preview. Refresh the preview and try again.');
     const alignment = await tx.textAlignment.findFirst({ where: { id: params.alignmentId, textId: params.textId } });
-    if (!alignment || workspace.currentAlignmentId !== alignment.id || alignment.contentRevisionId !== workspace.currentContentRevisionId ||
-        alignment.narrationId !== workspace.currentNarrationId) {
+    if (!alignment || workspace.currentAlignmentId !== alignment.id || alignment.contentRevisionId !== workspace.currentContentRevisionId) {
       if (params.expectedDraftVersion === undefined) throw new TextWorkspaceError('ALIGNMENT_NOT_FOUND', 'Alignment does not belong to this text');
       throw new ReaderReleaseError(409, 'Text alignment changed. Reload the text.');
-    }
-    if (params.changes.some(change => change.selected)) {
-      const activeJob = await tx.audioJob.findFirst({ where: { textId: params.textId, kind: 'GENERATE_NARRATION', status: { in: ['QUEUED', 'RUNNING'] } } });
-      if (alignment.status !== 'OK' || activeJob) throw new ReaderReleaseError(409, 'Wait for valid narration before selecting learning words.');
     }
     if (new Set(params.changes.map(change => change.occurrenceId)).size !== params.changes.length)
       throw new ReaderReleaseError(422, 'Each occurrence may appear only once in a batch.');
