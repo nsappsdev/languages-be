@@ -20,11 +20,12 @@ describe('reader font library and global lesson appearance',()=>{
     const response=await fetch(server.baseUrl+'/api'+endpoint,{method,headers:{'content-type':'application/json',...(auth?{authorization:`Bearer ${auth}`}:{})},body:body===undefined?undefined:JSON.stringify(body)});
     return {status:response.status,body:await response.json().catch(()=>null) as any};
   }
-  const upload=(auth?:string)=>api('/admin/reader-fonts','POST',{label:'Noto Armenian — Regular',fileName:'NotoSansArmenian.ttf',base64:bytes.toString('base64')},auth);
-  it('validates actual font contents and both alphabets, rejecting disguised or corrupt files',()=>{
+  const upload=(auth?:string,fileName='NotoSansArmenian.otf')=>api('/admin/reader-fonts','POST',{label:'Noto Armenian — Regular',fileName,base64:bytes.toString('base64')},auth);
+  it('validates actual font contents and both alphabets, accepting either font extension and rejecting corrupt files',()=>{
     assert.equal(inspectFont(bytes,'font.ttf').supportsArmenian,true);
     assert.equal(inspectFont(bytes,'font.ttf').supportsEnglish,true);
-    assert.throws(()=>inspectFont(bytes,'font.otf'));
+    assert.deepEqual(inspectFont(bytes,'font.otf'),inspectFont(bytes,'font.ttf'));
+    assert.throws(()=>inspectFont(bytes,'font.woff'));
     assert.throws(()=>inspectFont(Buffer.from('not a font'),'font.ttf'));
     const bad=Buffer.alloc(512);bad.writeUInt32BE(0x10000);assert.throws(()=>inspectFont(bad,'font.ttf'));
     assert.throws(()=>inspectFont(Buffer.alloc(3*1024*1024+1),'font.ttf'));
@@ -33,7 +34,8 @@ describe('reader font library and global lesson appearance',()=>{
     assert.equal((await upload('')).status,401);assert.equal((await upload(learnerToken)).status,403);
     const uploaded=await upload();assert.equal(uploaded.status,201);fontId=uploaded.body.font.id;
     assert.equal(uploaded.body.font.supportsArmenian,true);assert.equal(uploaded.body.font.available,true);
-    assert.equal((await upload()).body.font.id,fontId);
+    assert.equal(uploaded.body.font.format,'ttf','the contents determine the stored and served format');
+    assert.equal((await upload(undefined,'NotoSansArmenian.ttf')).body.font.id,fontId,'both extensions deduplicate by identical font bytes');
     assert.equal((await api('/admin/reader-fonts','GET',undefined,learnerToken)).status,403);
     assert.equal((await api('/admin/reader-fonts')).body.fonts.some((f:any)=>f.id===fontId),true);
     const url=server.baseUrl+`/api/reader-fonts/${fontId}/content`;

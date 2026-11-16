@@ -15,7 +15,9 @@ const fontPath = (font: Pick<ReaderFont, 'sha256' | 'format'>) => {
 export function inspectFont(bytes: Buffer, fileName: string) {
   const magic = bytes.subarray(0, 4).toString('hex');
   const format = magic === '4f54544f' ? 'otf' : ['00010000', '74727565'].includes(magic) ? 'ttf' : null;
-  if (!format || !new RegExp(`\\.${format}$`, 'i').test(fileName) || bytes.length > MAX_FONT_BYTES || bytes.length < 128)
+  // OpenType files can contain TrueType outlines, including files named .otf.
+  // Use the validated bytes for storage/delivery format, not the filename.
+  if (!format || !/\.(ttf|otf)$/i.test(fileName) || bytes.length > MAX_FONT_BYTES || bytes.length < 128)
     throw new ReaderReleaseError(400, 'Upload a valid TTF or OTF font, up to 3 MB.');
   try {
     const font = create(bytes);
