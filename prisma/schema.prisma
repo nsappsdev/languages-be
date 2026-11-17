@@ -263,6 +263,7 @@ model TextWorkspace {
   currentContentRevisionId String?
   currentNarrationId      String?
   currentAlignmentId      String?
+  timingValidationKey     String?
   sentenceEndOffsets      Json?
   approvedTextReleaseId   String?
   archivedAt              DateTime?
@@ -332,6 +333,7 @@ model AudioAsset {
   libraryRecordings VocabularyRecording[]
   vocabularyAudio VocabularyAudio[]
   sentenceAudio SentenceAudio[]
+  timings       AudioTiming[]
 
   @@index([textId, kind])
 }
@@ -346,11 +348,32 @@ model SentenceAudio {
   assetId      String?
   asset        AudioAsset?   @relation(fields: [assetId], references: [id])
   rawAlignment Json          @default("null")
+  normalizedAlignment Json   @default("null")
   retryable    Boolean       @default(false)
   updatedAt    DateTime      @updatedAt
 
   @@unique([textId, requestHash])
   @@index([ownerJobId, status])
+}
+
+// Versioned timing results belong to immutable audio plus exact source text.
+// Provider attempts are durable: reopening a draft never repeats a paid call.
+model AudioTiming {
+  id               String   @id @default(cuid())
+  assetId          String
+  asset            AudioAsset @relation(fields: [assetId], references: [id])
+  textSha256       String
+  algorithmVersion Int
+  status           TextAlignmentStatus
+  mapping          Json
+  providerAlignment Json    @default("null")
+  repairStatus     String   @default("NOT_REQUESTED")
+  repairError      String?
+  ownerJobId       String?
+  attemptedAt      DateTime?
+  updatedAt        DateTime @updatedAt
+
+  @@unique([assetId, textSha256, algorithmVersion])
 }
 
 model TextNarration {

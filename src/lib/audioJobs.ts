@@ -129,6 +129,10 @@ export async function failExpiredVocabularyJobs(prisma: PrismaClient) {
       data: { status: 'FAILED', errorCode: 'PROVIDER_UNKNOWN_OUTCOME', retryable: false } });
     await tx.sentenceAudio.updateMany({ where: { ownerJobId: { in: ids }, status: 'RUNNING' },
       data: { status: 'FAILED', retryable: false } });
+    await tx.audioTiming.updateMany({ where: { ownerJobId: { in: ids }, repairStatus: 'CHECKING_BUDGET' },
+      data: { repairStatus: 'NOT_REQUESTED', repairError: 'Usage checking was interrupted. Repair timings to check again.' } });
+    await tx.audioTiming.updateMany({ where: { ownerJobId: { in: ids }, repairStatus: 'RUNNING' },
+      data: { repairStatus: 'FAILED', repairError: 'Timing repair was interrupted after dispatch. Review the provider history before another paid request.' } });
   });
 }
 

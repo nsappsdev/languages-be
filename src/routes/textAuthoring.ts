@@ -14,6 +14,7 @@ import { requestVocabularyAudio, vocabularyAudioPlan } from '../lib/standaloneVo
 import { splitSentences } from '../lib/sentenceSegmentation';
 import { sentenceAudioState, SentenceRecording } from '../lib/sentenceNarration';
 import { saveSentencePlan } from '../lib/textMap';
+import { refreshDraftTimings } from '../lib/draftTimingRepair';
 
 const router = Router();
 const run = (handler: (req: AuthenticatedRequest, res: Response) => Promise<unknown>) =>
@@ -34,7 +35,8 @@ function requireAdmin(req: AuthenticatedRequest, res: Response): boolean {
 async function loadTextContext(lessonId: string, textId: string) {
   const item = await prisma.lessonItem.findFirst({ where: { id: textId, lessonId, archivedAt: null, lesson: { archivedAt: null } }, select: { id: true, lessonId: true } });
   if (!item) return null;
-  const workspace = await ensureWorkspace(prisma, textId);
+  await ensureWorkspace(prisma, textId);
+  const workspace = await refreshDraftTimings(prisma, textId);
   return { item, workspace };
 }
 
@@ -76,7 +78,9 @@ router.get(
     const lastRequest = (activeJob ?? latestJob)?.requestPayload as { contentRevisionId?: string; sentenceEndOffsets?: number[] } | undefined;
 
     const ends = context.workspace.sentenceEndOffsets as number[] | null ?? (lastRequest?.contentRevisionId === contentRevision?.id ? lastRequest?.sentenceEndOffsets : undefined);
-    const sentenceState = contentRevision ? await sentenceAudioState(prisma, context.item.id, contentRevision.text, contentRevision.sourceLanguage, narration?.voiceId ?? config.elevenLabs.defaultVoiceId, ends) : null;
+    const savedSentences = (narration?.requestSettings as { sentences?: SentenceRecording[] } | null)?.sentences;
+    const useSaved = narration?.contentRevisionId === contentRevision?.id && savedSentences;
+    const sentenceState = contentRevision && !useSaved ? await sentenceAudioState(prisma, context.item.id, contentRevision.text, contentRevision.sourceLanguage, narration?.voiceId ?? config.elevenLabs.defaultVoiceId, ends) : null;
     return res.json({
       text: {
         id: context.item.id,
@@ -85,7 +89,8 @@ router.get(
         activeNarrationJobId: activeJob?.id ?? null,
         latestNarrationJobId: latestJob?.id ?? null,
         sentenceEndOffsets: ends,
-        sentences: sentenceState?.sentences ?? [],
+        sentences: useSaved || sentenceState?.sentences || [],
+        timingRepairAvailable: Boolean(narration && alignment?.status === 'NEEDS_REVIEW'),
         activeVocabularyJobId: vocabularyJob?.id ?? null,
         contentRevision,
         narration: narration
@@ -237,6 +242,31 @@ router.post(
     }
   }),
 );
+
+router.post('/admin/lessons/:lessonId/texts/:textId/timing-repair-jobs', authenticate, run(async (req, res) => {
+  if (!requireAdmin(req, res)) return;
+  const context = await loadTextContext(req.params.lessonId, req.params.textId);
+  if (!context) return res.status(404).json({ message: 'Text not found' });
+  const parsed = z.object({ contentRevisionId: z.string().min(1), expectedDraftVersion: z.number().int().nonnegative(),
+    sentenceIndex: z.number().int().nonnegative().optional() }).strict().safeParse(req.body);
+  const idempotencyKey = req.header('Idempotency-Key');
+  if (!parsed.success || !idempotencyKey) return res.status(400).json({ message: 'Provide the current draft and an Idempotency-Key.' });
+  const result = await prisma.$transaction(async tx => {
+    await lockText(tx, context.item.id);
+    const current = await tx.textWorkspace.findUniqueOrThrow({ where: { textId: context.item.id } });
+    const existing = await tx.audioJob.findUnique({ where: { textId_kind_idempotencyKey: { textId: context.item.id, kind: 'GENERATE_NARRATION', idempotencyKey } } });
+    if (!existing && (current.currentContentRevisionId !== parsed.data.contentRevisionId || current.draftVersion !== parsed.data.expectedDraftVersion))
+      throw new ReaderReleaseError(409, 'The text changed. Reload before repairing timings.');
+    const narration = await tx.textNarration.findUnique({ where: { id: current.currentNarrationId ?? '' } });
+    if (!narration) throw new ReaderReleaseError(422, 'There is no saved recording to repair.');
+    const sentences = (narration.requestSettings as {sentences?: unknown[]}).sentences;
+    if (parsed.data.sentenceIndex !== undefined && (!sentences || parsed.data.sentenceIndex >= sentences.length))
+      throw new ReaderReleaseError(422, 'Choose a sentence from the saved recording.');
+    return createOrReplayJob(tx, { textId: context.item.id, kind: 'GENERATE_NARRATION', actorId: req.user!.id, idempotencyKey,
+      requestPayload: { ...parsed.data, voiceId: narration.voiceId, generationMode: 'sentences', repairOnly: true } });
+  });
+  return res.status(202).json({ job: { id: result.job.id, status: result.job.status }, replay: result.replay });
+}));
 
 router.get('/admin/lessons/:lessonId/texts/:textId/vocabulary/audio-plan', authenticate, run(async (req, res) => {
   if (!requireAdmin(req, res)) return;

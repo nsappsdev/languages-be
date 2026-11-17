@@ -14,6 +14,109 @@ Same-content-revision regeneration carries forward matching vocabulary selection
 
 See [the session record](docs/session-2026-11-11.md) for validation and companion-client behavior.
 
+### Sentence endpoint rounding (2026-11-16)
+
+Sentence validation compares word endpoints with the decoded WAV frame count.
+Provider timestamps rounded to milliseconds can end slightly after the exact
+sample boundary. `mapSentenceRecordings` now clamps an endpoint overrun of at
+most half a millisecond (12 samples at 24 kHz) to that boundary. Larger overruns,
+zero-duration words and invalid provider alignments still require review. Timing
+errors identify the affected word and its exact bounds. Only derived word
+endpoints change; provider alignment JSON, audio bytes, asset identities and
+published snapshots are preserved.
+
+The original Law 14 heading, `POSE AS A FRIEND, WORK AS A SPY`, demonstrated the
+false rejection: `SPY` ended at sample 60,192 (2.508000 seconds), while its WAV
+contained 60,186 samples (2.507750 seconds). The six-sample difference is 0.25 ms;
+the previous one-sample tolerance rejected it. The original production recording
+and alignment were checked locally against the correction, including checksum
+verification and assertions that both audio and raw alignment stayed unchanged.
+No new recording is needed for this mismatch.
+
+### Automatic timing recovery (2026-11-17)
+
+Apply `20261117090000_audio_timing_repair` and
+`20261117091000_timing_validation_identity` before starting this backend. The
+version-3 mapper validates provider JSON, finite/nonnegative timings, positive
+word durations, word order, exact source offsets and actual WAV bounds. It
+corrects only quantization-sized boundary errors; it never estimates word
+durations or stretches a timeline. Original and normalized provider alignments
+are retained separately. A normalized alignment is usable only when it exactly
+reconstructs the saved source, including Unicode, punctuation and numbers.
+
+`AudioTiming` caches the validated mapping by immutable asset, exact text SHA-256
+and algorithm version. Generation saves the audio before checking its timings.
+If local validation fails, the worker may make one budget-checked
+[ElevenLabs forced-alignment request](https://elevenlabs.io/docs/api-reference/forced-alignment/create)
+using that same WAV and text. Raw repair responses, including model loss scores,
+are saved separately from the original response. Loss is not interpreted as a
+0–1 probability or compared with an invented confidence cutoff. Recovered
+timings must pass the same source, ordering, duration and bounds checks.
+
+Repair dispatch is claimed durably before sending the request. Reopening a
+lesson and repeated repair clicks reuse completed results. An uncertain or
+failed dispatched repair is retained for review, not automatically retried.
+Expired jobs distinguish a pre-dispatch budget check from an interrupted paid
+request. Workers renew leases and stop further dispatches when source text
+changes. Good recordings and other sentences remain usable when one sentence
+needs attention.
+
+`ELEVENLABS_ALIGNMENT_MAX_USAGE_FRACTION` defaults to `0.3`. Before each alignment
+dispatch, the backend checks current subscription usage and reserves conservative
+headroom of at least 1,000 credits (or 10 per audio second, whichever is larger).
+An unavailable usage check, invalid limit, or insufficient headroom blocks the
+request. Automatic alignment is limited to recordings of at most five minutes.
+This is an alignment-fallback guard, not a change to ordinary admin-requested
+speech generation. External use of the same subscription can change its balance.
+No overage or subscription settings are modified.
+
+Opening an older draft or publishing performs a local-only version upgrade.
+Already-correct word IDs, clips and release identities remain unchanged. A real
+timing correction creates a new draft alignment, preserves selected words,
+phrases and translations, and rebuilds eligible clips locally. Published
+snapshots and their audio are never rewritten. The admin sentence status uses
+the saved timing result used for publication; it no longer instructs admins to
+regenerate every recording with a timing issue.
+
+`POST /admin/lessons/:lessonId/texts/:textId/timing-repair-jobs` accepts
+`{contentRevisionId, expectedDraftVersion, sentenceIndex?}` and an
+`Idempotency-Key`. It queues a repair-only job: no path synthesizes missing or
+replacement speech. A changed draft returns 409. Existing sentence recordings
+and legacy full recordings are supported. The admin offers **Repair timings**
+for a sentence and **Repair saved timings** for a text.
+
+To inventory or upgrade existing drafts in bulk without provider requests:
+
+```sh
+npm run timings:backfill
+npm run timings:backfill -- --apply
+# Optional restriction:
+npm run timings:backfill -- --apply --text-id=TEXT_ID
+```
+
+Verification: 65 unit tests and all 59 backend integration tests passed, including
+new/legacy recordings, bounded paid recovery, stale drafts, immutable publication
+and translation/clip preservation. Admin: 77 tests, lint, TypeScript and a
+production build passed. All automated provider calls are mocked.
+
+Real Law 14 verification used disposable local copies of production recordings.
+All 24 original sentences passed, the original `SPY` endpoint was corrected to
+60,186 samples, its Armenian translation and extracted clip survived an older
+draft upgrade, and the lesson published locally without any provider request.
+A missing-timing scenario then recovered the same 2.507750-second recording via
+the real forced-alignment API. The audio checksum remained unchanged, and a
+repeat repair made no further provider request. Across diagnostics and the final
+test there were three alignment calls, zero speech-generation calls and a
+measured increase from 813 to 816 credits out of 233,534 (about 0.35% total use).
+The local admin showed all 24 sentences as Ready, played the heading through
+without an audio error, and completed the repair-button flow using cached
+timings. The published local copy loaded in the mobile web reader, displayed
+the Armenian translation above SPY, and played in Teaching mode without browser
+errors. Native Android playback was not tested. The final compatibility rerun
+passed all 25 reader/sentence integration tests, including stable identities
+for already-correct older alignments. The live production lesson was read only;
+deployment is still pending.
+
 ## Configuration
 
 Server-side variables:

@@ -11,7 +11,8 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "seed": "npm run build && node dist/scripts/seedAdmin.js",
-    "vocabulary:backfill": "node dist/scripts/backfillVocabularyLibrary.js"
+    "vocabulary:backfill": "node dist/scripts/backfillVocabularyLibrary.js",
+    "timings:backfill": "node dist/scripts/backfillAudioTimings.js"
   },
   "dependencies": {
     "@prisma/client": "^6.19.2",

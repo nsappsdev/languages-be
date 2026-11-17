@@ -8,6 +8,7 @@ import { servePrivateAudio } from '../lib/servePrivateAudio';
 import { ReaderManifest } from '../types/reader';
 import { publishLesson } from '../lib/lessonPublication';
 import { lockLesson } from '../lib/authoringTransaction';
+import { refreshDraftTimings } from '../lib/draftTimingRepair';
 import { preferredVocabularyClips, vocabularyUsageKey } from '../lib/vocabularyLibrary';
 
 const router = Router();
@@ -27,6 +28,8 @@ function admin(req: AuthenticatedRequest) {
 router.post('/admin/lessons/:lessonId/publish', authenticate, run(async (req, res) => {
   admin(req);
   if (!z.object({}).strict().safeParse(req.body ?? {}).success) return res.status(400).json({ message: 'Publish does not accept release IDs or draft overrides' });
+  const items = await prisma.lessonItem.findMany({ where: { lessonId: req.params.lessonId, archivedAt: null, lesson: { archivedAt: null } }, select: { id: true } });
+  for (const item of items) await refreshDraftTimings(prisma, item.id);
   const result = await publishLesson(prisma, req.params.lessonId, req.user!.id);
   return res.status(result.replay ? 200 : 201).json({ ...result, status: 'PUBLISHED' });
 }));

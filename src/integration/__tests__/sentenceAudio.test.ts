@@ -16,6 +16,10 @@ describe('sentence generation through authoring API', () => {
   let failText = '';
   let uncertain = false;
   let misaligned = '';
+  let malformed = '';
+  let repairRequests = 0;
+  let repairFailure = false;
+  let budgetUsed = 100;
   before(async () => {
     config.elevenLabs.apiKey = 'synthetic-test';
     config.elevenLabs.defaultVoiceId = 'synthetic-test';
@@ -24,7 +28,13 @@ describe('sentence generation through authoring API', () => {
     restore = installFakeElevenLabsFetch();
     const synthetic = global.fetch;
     global.fetch = async (url, init) => {
-      if (String(url).includes('api.elevenlabs.io')) {
+      if (String(url).endsWith('/user/subscription')) return new Response(JSON.stringify({ character_count: budgetUsed, character_limit: 1000000 }), { status: 200 });
+      if (String(url).endsWith('/forced-alignment')) {
+        repairRequests++;
+        if (repairFailure) throw new Error('Connection lost after alignment dispatch');
+        if ((init?.body as FormData).get('text') === misaligned) return new Response('{}', { status: 422 });
+      }
+      if (String(url).includes('/text-to-speech/')) {
         const body = JSON.parse(String(init?.body));
         calls.push(body);
         if (body.text === failText) {
@@ -34,9 +44,14 @@ describe('sentence generation through authoring API', () => {
         }
       }
       const response = await synthetic(url, init);
-      if (String(url).includes('api.elevenlabs.io') && JSON.parse(String(init?.body)).text === misaligned) {
+      if (String(url).includes('/text-to-speech/') && JSON.parse(String(init?.body)).text === misaligned) {
         const body = await response.json();
         body.alignment.characters[0] = '#';
+        return new Response(JSON.stringify(body), { status: 200 });
+      }
+      if (String(url).includes('/text-to-speech/') && JSON.parse(String(init?.body)).text === malformed) {
+        const body = await response.json();
+        body.alignment = { characters: ['A'] };
         return new Response(JSON.stringify(body), { status: 200 });
       }
       return response;
@@ -118,6 +133,171 @@ describe('sentence generation through authoring API', () => {
     assert.equal((await api(base + '/vocabulary/import', 'POST', { alignmentId: source.alignmentId, expectedDraftVersion: source.draftVersion,
       entries: [{ occurrenceId: source.occurrences[4].id, translation: 'անհամապատասխան' }] })).status, 200);
     assert.equal((await api(`/admin/lessons/${lesson.id}/publish`, 'POST', {})).status, 422);
+  });
+
+  it('reuses existing audio with rounded end timestamps and publishes without another provider request', async () => {
+    calls = [];
+    const { base, lesson, workspace } = await create('SPY');
+    const input = { contentRevisionId: workspace.contentRevision.id };
+    const requested = await api(base + '/narration-jobs', 'POST', input);
+    assert.equal((await execute(requested.body.job.id)).status, 'SUCCEEDED');
+    assert.equal(calls.length, 1);
+    const saved = await prisma.sentenceAudio.findFirstOrThrow({ where: { textId: lesson.items[0].id }, include: { asset: true } });
+    const asset = saved.asset!;
+    const originalAudio = Buffer.from(readAudioAssetRange(asset.storageKey, 0, asset.byteLength)!.buffer);
+    const alignment = saved.rawAlignment as { characters: string[]; character_start_times_seconds: number[]; character_end_times_seconds: number[] };
+    alignment.character_end_times_seconds[alignment.characters.length - 1] = (asset.frameCount! + 6) / asset.sampleRate!;
+    await prisma.sentenceAudio.update({ where: { id: saved.id }, data: { rawAlignment: alignment } });
+    await prisma.audioTiming.deleteMany({ where: { assetId: asset.id } });
+    const oldWorkspace = await prisma.textWorkspace.findUniqueOrThrow({ where: { textId: lesson.items[0].id } });
+    await prisma.textAlignment.update({ where: { id: oldWorkspace.currentAlignmentId! }, data: { algorithmVersion: 2, status: 'NEEDS_REVIEW' } });
+    const cached = (await api(base)).body.text;
+    assert.equal(cached.sentences[0].alignmentIssue, undefined);
+    const refresh = await api(base + '/narration-jobs', 'POST', input);
+    assert.equal((await execute(refresh.body.job.id)).status, 'SUCCEEDED');
+    assert.equal(calls.length, 1, 'existing audio is reused, not regenerated');
+    const occurrence = (await api(base + '/occurrences')).body.occurrences[0];
+    assert.equal(occurrence.speechEndSample, asset.frameCount);
+    const after = await prisma.sentenceAudio.findUniqueOrThrow({ where: { id: saved.id } });
+    assert.equal(after.assetId, asset.id);
+    assert.deepEqual(after.rawAlignment, alignment, 'provider timestamps remain unchanged');
+    assert.deepEqual(readAudioAssetRange(asset.storageKey, 0, asset.byteLength)!.buffer, originalAudio);
+    const published = await api(`/admin/lessons/${lesson.id}/publish`, 'POST', {});
+    assert.equal(published.status, 201, JSON.stringify(published.body));
+    assert.equal(calls.length, 1, 'publication also makes no provider request');
+  });
+
+  it('automatically repairs malformed new timings once while preserving the generated recording', async () => {
+    calls = []; repairRequests = 0;
+    malformed = 'Repair this sentence.';
+    const { base, lesson, workspace } = await create(malformed);
+    const requested = await api(base + '/narration-jobs', 'POST', { contentRevisionId: workspace.contentRevision.id });
+    assert.equal((await execute(requested.body.job.id)).status, 'SUCCEEDED');
+    malformed = '';
+    assert.equal(calls.length, 1);
+    assert.equal(repairRequests, 1);
+    const saved = await prisma.sentenceAudio.findFirstOrThrow({ where: { textId: lesson.items[0].id } });
+    assert.deepEqual(saved.rawAlignment, { characters: ['A'] });
+    const current = (await api(base)).body.text;
+    assert.equal(current.sentences[0].assetId, saved.assetId);
+    assert.equal(current.sentences[0].alignmentIssue, undefined);
+    assert.equal(current.alignmentSummary.status, 'OK');
+    const repair = await api(base + '/timing-repair-jobs', 'POST', { contentRevisionId: current.contentRevision.id, expectedDraftVersion: current.draftVersion });
+    assert.equal((await execute(repair.body.job.id)).status, 'SUCCEEDED');
+    assert.equal(repairRequests, 1);
+    assert.equal(calls.length, 1);
+    assert.equal((await api(`/admin/lessons/${lesson.id}/publish`, 'POST', {})).status, 201);
+  });
+
+  it('honors the usage ceiling and repairs existing timings without generating missing sentences', async () => {
+    calls = []; repairRequests = 0; budgetUsed = 300000;
+    malformed = 'Saved audio.';
+    const { base, workspace } = await create('Saved audio. Missing audio.');
+    const request = await api(base + '/narration-jobs', 'POST', { contentRevisionId: workspace.contentRevision.id, sentenceIndex: 0 });
+    assert.equal((await execute(request.body.job.id)).status, 'SUCCEEDED');
+    malformed = '';
+    assert.equal(repairRequests, 0);
+    const current = (await api(base)).body.text;
+    assert.match(current.sentences[0].repairError, /usage limit/);
+    assert.equal(current.sentences[1].assetId, null);
+    budgetUsed = 100;
+    const key = crypto.randomUUID();
+    const input = { contentRevisionId: current.contentRevision.id, expectedDraftVersion: current.draftVersion };
+    const repair = await api(base + '/timing-repair-jobs', 'POST', input, key);
+    assert.equal((await execute(repair.body.job.id)).status, 'SUCCEEDED');
+    assert.equal((await api(base + '/timing-repair-jobs', 'POST', input, key)).body.job.id, repair.body.job.id);
+    const after = (await api(base)).body.text;
+    assert.equal(after.sentences[0].alignmentIssue, undefined);
+    assert.equal(after.sentences[0].assetId, current.sentences[0].assetId);
+    assert.equal(after.sentences[1].assetId, null);
+    assert.equal(calls.length, 1, 'repair never generates a missing sentence');
+    assert.equal(repairRequests, 1);
+  });
+
+  it('does not repeat an uncertain alignment request or break the text editor', async () => {
+    calls = []; repairRequests = 0; repairFailure = true;
+    malformed = 'Keep this audio.';
+    const { base, workspace } = await create(malformed);
+    const request = await api(base + '/narration-jobs', 'POST', { contentRevisionId: workspace.contentRevision.id });
+    assert.equal((await execute(request.body.job.id)).status, 'SUCCEEDED');
+    malformed = ''; repairFailure = false;
+    const current = (await api(base)).body.text;
+    assert.equal(current.sentences[0].canRepair, false);
+    assert.ok(current.sentences[0].assetId);
+    assert.equal((await api(base + '/occurrences')).body.occurrences.length, 3);
+    const repair = await api(base + '/timing-repair-jobs', 'POST', { contentRevisionId: current.contentRevision.id, expectedDraftVersion: current.draftVersion });
+    assert.equal((await execute(repair.body.job.id)).status, 'SUCCEEDED');
+    assert.equal(calls.length, 1);
+    assert.equal(repairRequests, 1);
+  });
+
+  it('upgrades existing drafts without losing translations, clips or immutable publications', async () => {
+    calls = []; repairRequests = 0;
+    const { base, lesson, workspace } = await create('Keep my words.');
+    const source = (await api(base + '/occurrences')).body;
+    await api(base + '/vocabulary/import', 'POST', { alignmentId: source.alignmentId, expectedDraftVersion: source.draftVersion,
+      entries: [{ occurrenceId: source.occurrences[2].id, translation: 'բառեր' }] });
+    const request = await api(base + '/narration-jobs', 'POST', { contentRevisionId: workspace.contentRevision.id });
+    await execute(request.body.job.id);
+    const plan = (await api(base + '/vocabulary/audio-plan')).body;
+    const wordJob = (await api(base + '/vocabulary/audio-jobs', 'POST', { expectedDraftVersion: plan.draftVersion })).body.job;
+    await runGenerateVocabularyJob(prisma, await prisma.audioJob.update({ where: { id: wordJob.id }, data: { status: 'RUNNING' } }));
+    const published = await api(`/admin/lessons/${lesson.id}/publish`, 'POST', {});
+    assert.equal(published.status, 201);
+    const immutable = await prisma.lessonPublication.findUniqueOrThrow({ where: { id: published.body.publicationId } });
+    const before = (await api(base)).body.text;
+    await prisma.textAlignment.update({ where: { id: before.alignmentSummary.id }, data: { algorithmVersion: 2 } });
+    assert.equal((await api(base)).body.text.alignmentSummary.id, before.alignmentSummary.id, 'correct older timings retain their identities');
+    assert.equal((await api(`/admin/lessons/${lesson.id}/publish`, 'POST', {})).status, 200, 'unchanged publication is reused');
+    await prisma.textWorkspace.update({ where: { textId: lesson.items[0].id }, data: { timingValidationKey: null } });
+    await prisma.textAlignment.update({ where: { id: before.alignmentSummary.id }, data: { algorithmVersion: 2, status: 'NEEDS_REVIEW' } });
+    const after = (await api(base)).body.text;
+    assert.equal(after.alignmentSummary.status, 'OK');
+    assert.notEqual(after.alignmentSummary.id, before.alignmentSummary.id);
+    assert.equal(after.sentences[0].assetId, before.sentences[0].assetId);
+    const words = (await api(base + '/occurrences')).body.occurrences;
+    assert.equal(words[2].translations[0].translation, 'բառեր');
+    assert.equal(words[2].selected, true);
+    assert.ok(words[2].clipAssetId);
+    assert.equal((await api(base + '/readiness')).body.readiness.readyForPublication, true);
+    assert.deepEqual(await prisma.lessonPublication.findUniqueOrThrow({ where: { id: immutable.id } }), immutable);
+    assert.equal(calls.length, 1); assert.equal(repairRequests, 0);
+    assert.equal((await api(base)).body.text.alignmentSummary.id, after.alignmentSummary.id, 'upgrade runs once');
+  });
+
+  it('does not dispatch a repair after the source text changes', async () => {
+    calls = []; repairRequests = 0;
+    const { base, workspace } = await create('Original audio.');
+    await execute((await api(base + '/narration-jobs', 'POST', { contentRevisionId: workspace.contentRevision.id })).body.job.id);
+    const current = (await api(base)).body.text;
+    const input = { contentRevisionId: current.contentRevision.id, expectedDraftVersion: current.draftVersion };
+    assert.equal((await api(base + '/timing-repair-jobs', 'POST', { ...input, expectedDraftVersion: -1 })).status, 400);
+    assert.equal((await api(base + '/timing-repair-jobs', 'POST', { ...input, expectedDraftVersion: current.draftVersion - 1 })).status, 409);
+    const repair = await api(base + '/timing-repair-jobs', 'POST', input);
+    await api(base + '/content-revisions', 'POST', { text: 'Changed source.', sourceLanguage: 'en' });
+    assert.equal((await execute(repair.body.job.id)).status, 'FAILED');
+    assert.equal(calls.length, 1); assert.equal(repairRequests, 0);
+  });
+
+  it('repairs an existing full recording without converting it to sentence generation', async () => {
+    calls = []; repairRequests = 0;
+    const { base, lesson, workspace } = await create('Legacy audio.');
+    const job = await prisma.audioJob.create({ data: { textId: lesson.items[0].id, kind: 'GENERATE_NARRATION', actorId: 'legacy-test',
+      idempotencyKey: crypto.randomUUID(), requestHash: crypto.randomUUID(), requestPayload: { contentRevisionId: workspace.contentRevision.id, voiceId: 'synthetic-test' } } });
+    assert.equal((await execute(job.id)).status, 'SUCCEEDED');
+    const old = await prisma.textWorkspace.findUniqueOrThrow({ where: { textId: lesson.items[0].id } });
+    const narration = await prisma.textNarration.findUniqueOrThrow({ where: { id: old.currentNarrationId! } });
+    await prisma.textAlignment.update({ where: { id: old.currentAlignmentId! }, data: { algorithmVersion: 1 } });
+    await prisma.textNarration.update({ where: { id: narration.id }, data: { rawAlignment: { characters: ['invalid'] } } });
+    const current = (await api(base)).body.text;
+    assert.equal(current.alignmentSummary.status, 'NEEDS_REVIEW');
+    const repair = await api(base + '/timing-repair-jobs', 'POST', { contentRevisionId: current.contentRevision.id, expectedDraftVersion: current.draftVersion });
+    assert.equal((await execute(repair.body.job.id)).status, 'SUCCEEDED');
+    const after = (await api(base)).body.text;
+    assert.equal(after.narration.assetId, narration.assetId);
+    assert.equal(after.alignmentSummary.status, 'OK');
+    assert.equal(calls.length, 1); assert.equal(repairRequests, 1);
+    assert.equal((await api(`/admin/lessons/${lesson.id}/publish`, 'POST', {})).status, 201);
   });
 
   it('generates every sentence separately, publishes only sentence assets, and regenerates only the chosen sentence', async () => {

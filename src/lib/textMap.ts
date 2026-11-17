@@ -2,6 +2,7 @@ import { Prisma, TextContentRevision } from '@prisma/client';
 import { SentenceSpan, splitSentences } from './sentenceSegmentation';
 import { TextAlignmentResult } from './textOccurrenceAlignment';
 import { ReaderReleaseError } from './readerRelease';
+import { TIMING_ALGORITHM_VERSION } from './audioTiming';
 
 /** Text identities exist before speech. Missing timings never hide selectable words. */
 export function mapSourceText(text: string, spans: SentenceSpan[]): TextAlignmentResult {
@@ -24,7 +25,7 @@ export async function persistTextMap(tx: Prisma.TransactionClient, revision: Tex
   }) : null;
   const sentences = mapping.sentences.map((sentence, index) => ({ ...sentence, id: `sentence-${index}`, ...sentenceAudio[index] }));
   const alignment = await tx.textAlignment.create({ data: {
-    textId: revision.textId, contentRevisionId: revision.id, narrationId, algorithmVersion: 2,
+    textId: revision.textId, contentRevisionId: revision.id, narrationId, algorithmVersion: narrationId ? TIMING_ALGORITHM_VERSION : 2,
     status: mapping.status, sentences: sentences as unknown as Prisma.InputJsonValue,
     diagnostics: mapping.diagnostics as unknown as Prisma.InputJsonValue,
   } });

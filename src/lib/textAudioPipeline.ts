@@ -10,6 +10,8 @@ import { inspectReaderDraft } from './readerRelease';
 import { extractMissingClips } from './lessonPublication';
 import { generateSentenceAssets } from './sentenceNarration';
 import { persistTextMap } from './textMap';
+import { refreshDraftTimings } from './draftTimingRepair';
+import { TIMING_ALGORITHM_VERSION } from './audioTiming';
 
 /**
  * Executes one claimed AudioJob to completion (success or terminal failure).
@@ -23,6 +25,8 @@ export interface GenerateNarrationPayload {
   sentenceEndOffsets?: number[];
   sentenceIndex?: number;
   regenerateSentenceIndex?: number;
+  repairOnly?: boolean;
+  expectedDraftVersion?: number;
 }
 
 export interface ExtractClipsPayload {
@@ -33,6 +37,14 @@ export interface ExtractClipsPayload {
 
 export async function runGenerateNarrationJob(prisma: PrismaClient, job: AudioJob) {
   const payload = job.requestPayload as unknown as GenerateNarrationPayload;
+
+  if (payload.repairOnly) {
+    try {
+      await refreshDraftTimings(prisma, job.textId, { jobId: job.id, sentenceIndex: payload.sentenceIndex,
+        expectedDraftVersion: payload.expectedDraftVersion!, contentRevisionId: payload.contentRevisionId });
+    } catch (error) { await failJob(prisma, job.id, { code: 'TIMING_REPAIR_FAILED', message: (error as Error).message, retryable: false }); }
+    return;
+  }
 
   const contentRevision = await prisma.textContentRevision.findUnique({ where: { id: payload.contentRevisionId } });
   if (!contentRevision || contentRevision.textId !== job.textId) {
@@ -129,8 +141,9 @@ export async function runGenerateNarrationJob(prisma: PrismaClient, job: AudioJo
     const mapping = buildTextAlignment({
       text: contentRevision.text,
       alignment: result.alignment as ElevenLabsCharacterAlignment | null,
-      algorithmVersion: 1,
+      algorithmVersion: TIMING_ALGORITHM_VERSION,
       sampleRate: result.audio.sampleRate,
+      frameCount: result.audio.frameCount,
     });
 
     const sentencesWithIds = mapping.sentences.map((sentence, index) => ({
@@ -143,7 +156,7 @@ export async function runGenerateNarrationJob(prisma: PrismaClient, job: AudioJo
         textId: job.textId,
         contentRevisionId: contentRevision.id,
         narrationId: narration.id,
-        algorithmVersion: 1,
+        algorithmVersion: TIMING_ALGORITHM_VERSION,
         status: mapping.status,
         sentences: sentencesWithIds as any,
         diagnostics: mapping.diagnostics as any,
