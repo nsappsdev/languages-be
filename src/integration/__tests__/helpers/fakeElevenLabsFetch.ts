@@ -13,6 +13,12 @@ export function installFakeElevenLabsFetch() {
   const shim = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
     if (new URL(url).hostname === 'api.elevenlabs.io') {
+      if (new URL(url).pathname === '/v1/user/subscription') return new Response(JSON.stringify({ character_count: 100, character_limit: 1000000 }), { status: 200 });
+      if (new URL(url).pathname === '/v1/forced-alignment') {
+        const text = String((init?.body as FormData).get('text'));
+        return new Response(JSON.stringify({ characters: Array.from(text).map((text, i) => ({ text, start: i * 0.05, end: (i + 1) * 0.05 })),
+          words: [{ text, start: 0, end: text.length * 0.05, loss: 0.01 }], loss: 0.01 }), { status: 200 });
+      }
       const body = JSON.parse(String(init?.body ?? '{}')) as { text: string };
       const text = body.text ?? '';
       const characters = Array.from(text);

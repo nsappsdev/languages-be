@@ -15,9 +15,11 @@ export interface ElevenLabsCharacterAlignment {
 
 export type AlignmentDiagnosticCode =
   | 'ALIGNMENT_MISSING'
+  | 'ALIGNMENT_INVALID'
   | 'ALIGNMENT_ARRAY_LENGTH_MISMATCH'
   | 'NON_FINITE_TIMING'
   | 'NON_MONOTONIC_TIMING'
+  | 'INVALID_WORD_TIMING'
   | 'TEXT_ALIGNMENT_MISMATCH';
 
 export interface AlignmentDiagnostic {
@@ -56,10 +58,11 @@ export interface TextAlignmentResult {
 
 export interface BuildTextAlignmentInput {
   text: string;
-  alignment: ElevenLabsCharacterAlignment | null;
+  alignment: unknown;
   algorithmVersion: number;
   sampleRate?: number;
   sentenceSpans?: SentenceSpan[];
+  frameCount?: number;
 }
 
 // v1 English word tokenization policy: letters/digits with internal straight
@@ -113,7 +116,14 @@ export function buildTextAlignment(input: BuildTextAlignmentInput): TextAlignmen
     };
   }
 
-  const { characters, character_start_times_seconds: starts, character_end_times_seconds: ends } = alignment;
+  const candidate = alignment as Partial<ElevenLabsCharacterAlignment>;
+  if (!Array.isArray(candidate.characters) || !candidate.characters.every(c => typeof c === 'string' && c.length > 0) ||
+      !Array.isArray(candidate.character_start_times_seconds) || !Array.isArray(candidate.character_end_times_seconds)) {
+    return { status: 'NEEDS_REVIEW', diagnostics: [{ code: 'ALIGNMENT_INVALID', message: 'The recording is saved, but its timing data is malformed. Repair timings using this recording.' }], occurrences: [], sentences: [] };
+  }
+  const characters = candidate.characters;
+  const starts = [...candidate.character_start_times_seconds];
+  const ends = [...candidate.character_end_times_seconds];
   if (characters.length !== starts.length || characters.length !== ends.length) {
     return {
       status: 'NEEDS_REVIEW',
@@ -138,10 +148,16 @@ export function buildTextAlignment(input: BuildTextAlignmentInput): TextAlignmen
     }
   }
   if (!diagnostics.length) {
+    const tolerance = 0.0005;
     for (let i = 0; i < characters.length; i += 1) {
+      // Only quantization-sized boundary corrections are safe without listening.
+      if (starts[i] < 0 && starts[i] >= -tolerance) starts[i] = 0;
+      if (ends[i] < 0 && ends[i] >= -tolerance) ends[i] = 0;
+      if (i && starts[i] < ends[i - 1] && ends[i - 1] - starts[i] <= tolerance + Number.EPSILON)
+        starts[i] = ends[i - 1];
       const startsBeforeEnds = starts[i] <= ends[i];
       const monotonicAcrossChars = i === 0 || starts[i] >= ends[i - 1];
-      if (!startsBeforeEnds || !monotonicAcrossChars) {
+      if (starts[i] < 0 || ends[i] < 0 || !startsBeforeEnds || !monotonicAcrossChars) {
         diagnostics.push({
           code: 'NON_MONOTONIC_TIMING',
           message: `Non-monotonic character timing at index ${i}`,
@@ -162,7 +178,7 @@ export function buildTextAlignment(input: BuildTextAlignmentInput): TextAlignmen
         {
           code: 'TEXT_ALIGNMENT_MISMATCH',
           message:
-            'Provider character sequence does not exactly reconstruct the saved source text (likely text normalization). Manual alignment correction is required before word selection.',
+            'The recording is saved, but its timing text does not match the saved sentence. Repair timings using this recording.',
         },
       ],
       occurrences: [],
@@ -184,7 +200,19 @@ export function buildTextAlignment(input: BuildTextAlignmentInput): TextAlignmen
       (s) => charStart >= s.charStart && charEnd <= s.charEnd,
     );
     const speechStartSample = secondsToSampleIndex(characterStarts[charStart], sampleRate);
-    const speechEndSample = secondsToSampleIndex(characterEnds[charEnd - 1], sampleRate);
+    let speechEndSample = secondsToSampleIndex(characterEnds[charEnd - 1], sampleRate);
+    if (input.frameCount !== undefined && speechEndSample > input.frameCount &&
+        speechEndSample - input.frameCount <= Math.floor(sampleRate / 2000)) speechEndSample = input.frameCount;
+    if (!Number.isSafeInteger(speechStartSample) || !Number.isSafeInteger(speechEndSample) || speechEndSample <= speechStartSample ||
+        (input.frameCount !== undefined && speechEndSample > input.frameCount)) {
+      const seconds = (samples: number) => `${(samples / sampleRate).toFixed(6)} s`;
+      diagnostics.push({ code: 'INVALID_WORD_TIMING', message: speechEndSample <= speechStartSample
+        ? `Word "${surfaceText}" has no positive duration (start ${seconds(speechStartSample)}, end ${seconds(speechEndSample)}).`
+        : `Word "${surfaceText}" ends at ${seconds(speechEndSample)}, after the recording ends at ${seconds(input.frameCount ?? 0)} (${speechEndSample - (input.frameCount ?? 0)} samples beyond the audio).` });
+    }
+    const previousWord = occurrences[occurrences.length - 1];
+    if (previousWord && speechStartSample < previousWord.speechEndSample!)
+      diagnostics.push({ code: 'NON_MONOTONIC_TIMING', message: `Word "${surfaceText}" overlaps the previous word. Repair timings using the saved recording.` });
 
     occurrences.push({
       ordinal,
@@ -208,5 +236,5 @@ export function buildTextAlignment(input: BuildTextAlignmentInput): TextAlignmen
     occurrenceIds: occurrences.filter((o) => o.sentenceIndex === index).map((o) => o.ordinal),
   }));
 
-  return { status: 'OK', diagnostics: [], occurrences, sentences };
+  return { status: diagnostics.length ? 'NEEDS_REVIEW' : 'OK', diagnostics, occurrences, sentences };
 }

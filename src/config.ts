@@ -25,6 +25,7 @@ export const config = {
   elevenLabs: {
     apiKey: process.env.ELEVENLABS_API_KEY ?? '',
     defaultVoiceId: process.env.ELEVENLABS_DEFAULT_VOICE_ID ?? '',
+    alignmentMaxUsageFraction: Number(process.env.ELEVENLABS_ALIGNMENT_MAX_USAGE_FRACTION ?? 0.3),
   },
   audioWorker: {
     enabled: (process.env.AUDIO_WORKER_ENABLED ?? 'false').toLowerCase() === 'true',

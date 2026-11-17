@@ -5,7 +5,7 @@ import { assembleSentences, mapSentenceRecordings } from '../sentenceNarration';
 import { buildTextAlignment } from '../textOccurrenceAlignment';
 
 describe('sentence audio boundaries and assembly', () => {
-  it('clamps a one-sample timestamp rounding difference but rejects larger overruns', () => {
+  it('clamps end rounding up to half a millisecond but rejects larger overruns', () => {
     const text = 'SPY';
     const recorded = (frameCount: number) => ({ assetId: 'sentence-rounding',
       audio: { sampleRate: 24000, channels: 1, bitsPerSample: 16, frameCount, samples: new Int16Array(frameCount) },
@@ -18,10 +18,39 @@ describe('sentence audio boundaries and assembly', () => {
     assert.equal(result.sentences[0].alignmentIssue, undefined);
     const exact = mapSentenceRecordings(text, spans, [recorded(65760)]);
     assert.equal(exact.mapping.occurrences[0].speechEndSample, 65760);
-    const invalid = mapSentenceRecordings(text, spans, [recorded(65758)]);
+    const boundary = mapSentenceRecordings(text, spans, [recorded(65748)]);
+    assert.equal(boundary.mapping.status, 'OK');
+    assert.equal(boundary.mapping.occurrences[0].speechEndSample, 65748);
+    const invalid = mapSentenceRecordings(text, spans, [recorded(65747)]);
     assert.equal(invalid.mapping.status, 'NEEDS_REVIEW');
-    assert.ok(invalid.sentences[0].alignmentIssue);
+    assert.equal(invalid.sentences[0].alignmentIssue, 'Word "SPY" ends at 2.740000 s, after the recording ends at 2.739458 s (13 samples beyond the audio).');
     assert.equal(invalid.mapping.occurrences[0].speechEndSample, null);
+  });
+
+  it('accepts the real Law 14 SPY endpoint without changing raw timings or audio', () => {
+    const alignment = { characters: ['S', 'P', 'Y'], character_start_times_seconds: [1.591, 1.649, 1.741],
+      character_end_times_seconds: [1.649, 1.741, 2.508] };
+    const original = structuredClone(alignment);
+    const samples = new Int16Array(60186).fill(7);
+    const result = mapSentenceRecordings('SPY', splitSentences('SPY'), [{ assetId: 'law14-existing-heading', alignment,
+      audio: { sampleRate: 24000, channels: 1, bitsPerSample: 16, frameCount: samples.length, samples } }]);
+    assert.equal(result.mapping.status, 'OK');
+    assert.equal(result.mapping.occurrences[0].speechEndSample, 60186);
+    assert.equal(result.sentences[0].assetId, 'law14-existing-heading');
+    assert.equal(result.sentences[0].alignmentIssue, undefined);
+    assert.deepEqual(alignment, original);
+    assert.ok(samples.every(sample => sample === 7));
+  });
+
+  it('still rejects words with no duration, including after end clamping', () => {
+    for (const [start, end] of [[0.01, 0.01], [1, 1.0005]] as const) {
+      const result = mapSentenceRecordings('A', splitSentences('A'), [{ assetId: 'invalid-word',
+        audio: { sampleRate: 24000, channels: 1, bitsPerSample: 16, frameCount: 24000, samples: new Int16Array(24000) },
+        alignment: { characters: ['A'], character_start_times_seconds: [start], character_end_times_seconds: [end] } }]);
+      assert.equal(result.mapping.status, 'NEEDS_REVIEW');
+      assert.match(result.sentences[0].alignmentIssue!, /no positive duration/);
+      assert.equal(result.mapping.diagnostics[0].code, 'INVALID_WORD_TIMING');
+    }
   });
 
   it('keeps abbreviations, decimals, closing quotes and original source offsets', () => {
